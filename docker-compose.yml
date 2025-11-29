@@ -1,0 +1,11 @@
+services:
+  familysync:
+    # Build from the current directory
+    build: .
+    container_name: familysync
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      # CRITICAL: Persist the database and uploaded files (avatars)
+      - ./pb_data:/pb/pb_data

@@ -1,0 +1,116 @@
+/// <reference path="../pb_data/types.d.ts" />
+
+onRecordCreateRequest((e) => {
+    console.log("1. Hook Start");
+
+    try {
+        const result = new DynamicModel({ "total": 0 });
+        
+        console.log("2. Preparing Query");
+        
+        $app.db()
+            .select("count(*) as total")
+            .from("users")
+            .one(result);
+
+        const totalUsers = parseInt(result.total);
+        console.log("3. Count Result: " + totalUsers);
+
+        // --- Logic Branch ---
+        if (totalUsers === 0) {
+            console.log("4. Branch: First Run");
+            e.record.set("isAdmin", true);
+            console.log("5. Set Admin Success");
+            return e.next();
+        } 
+        
+        console.log("4. Branch: Security Check");
+        
+        // --- FIX STARTS HERE ---
+        // OLD: const authRecord = e.httpContext.get("authRecord");
+        // NEW: Access auth record directly from the event
+        const authRecord = e.auth; 
+        // --- FIX ENDS HERE ---
+        
+        if (!authRecord) {
+            console.log("5. Denied: No Auth");
+            throw new ForbiddenError("Registration is closed (No Auth).");
+        }
+        
+        // Check the custom 'isAdmin' boolean on your users collection
+        if (!authRecord.getBool("isAdmin")) {
+            console.log("5. Denied: Not Admin");
+            throw new ForbiddenError("Registration is closed (Not Admin).");
+        }
+
+        console.log("5. Allowed");
+        return e.next();
+
+    } catch (err) {
+        console.log("!!! ERROR CAUGHT !!!");
+        console.log(err);
+        throw err;
+    }
+}, "users");
+
+routerAdd("GET", "/api/app_status", (c) => {
+    try {
+        const result = new DynamicModel({ "total": 0 });
+        
+        $app.db()
+            .select("count(*) as total")
+            .from("users")
+            .one(result);
+
+        return c.json(200, { 
+            setupRequired: result.total === 0 
+        });
+    } catch (e) {
+        // If error (e.g. DB not ready), assume setup isn't done or fail safe
+        return c.json(200, { setupRequired: false });
+    }
+});
+
+// main.pb.js
+
+routerAdd("POST", "/api/admin/reset_password", (c) => {
+    // 1. Use the helper to get the request info (Safe way)
+    const info = $apis.requestInfo(c);
+    const authRecord = info.authRecord;
+
+    // --- DEBUGGING LOGS (Check your terminal when you click the button) ---
+    if (!authRecord) {
+        console.log("[ResetPassword] Denied: No auth token found.");
+    } else {
+        console.log("[ResetPassword] Request by User: " + authRecord.get("username"));
+        console.log("[ResetPassword] isAdmin status: " + authRecord.getBool("isAdmin"));
+    }
+    // --------------------------------------------------------------------
+
+    // 2. Security Check
+    if (!authRecord || !authRecord.getBool("isAdmin")) {
+        throw new ForbiddenError("Only admins can force-reset passwords.");
+    }
+
+    // 3. Parse Data
+    // Note: info.data is the parsed JSON body
+    const targetId = info.data.id;
+    const newPassword = info.data.password;
+
+    if (!targetId || !newPassword) {
+        throw new BadRequestError("Missing id or password.");
+    }
+
+    try {
+        const record = $app.findRecordById("users", targetId);
+        
+        record.setPassword(newPassword);
+        record.setPasswordConfirm(newPassword);
+        
+        $app.save(record);
+
+        return c.json(200, { success: true });
+    } catch (err) {
+        return c.json(400, { error: err.message });
+    }
+});
