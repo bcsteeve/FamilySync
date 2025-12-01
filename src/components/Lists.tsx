@@ -1,8 +1,11 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { ShoppingItem, TodoItem, ShoppingCategory, PriorityLevel, ShoppingStore, ShoppingLogEntry, ShoppingLogType, User } from '../types';
-import { Check, Trash2, Plus, ShoppingCart, CheckSquare, GripVertical, AlertCircle, ArrowDown, Lock, MoreHorizontal, History, Tag, X, ShoppingBag, Store, Save, Clock, User as UserIcon, Eye, Calendar, CalendarClock } from 'lucide-react';
+import { Check, Trash2, Plus, ShoppingCart, CheckSquare, GripVertical, AlertCircle, ArrowDown, Lock, MoreHorizontal, History, Tag, X, ShoppingBag, Store, Save, User as UserIcon, Eye, CalendarClock } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { useTranslation } from 'react-i18next';
+import DatePicker from 'react-datepicker';
 
 interface ListsProps {
   shoppingList: ShoppingItem[];
@@ -27,6 +30,7 @@ const Lists: React.FC<ListsProps> = ({
 }) => {
   const { users, currentUser } = useUser();
   const { activePalette, getUserColor } = useTheme();
+  const { t } = useTranslation();
   
   const [newItemText, setNewItemText] = useState('');
   const [showHistory, setShowHistory] = useState(false);
@@ -87,13 +91,9 @@ const Lists: React.FC<ListsProps> = ({
   if (!currentUser) return null;
 
   const getUsername = (uid: string) => {
-      return users.find(u => u.id === uid)?.username || 'Unknown';
+      return users.find(u => u.id === uid)?.username || t('lists.unknown_user');
   };
 
-  const getMyPriority = (item: ShoppingItem): PriorityLevel => {
-      return item.userPriorities?.[currentUser.id] || 'NORMAL';
-  }
-  
   const getMyCategoryId = (item: ShoppingItem): string | undefined => {
       return item.userCategoryIds?.[currentUser.id];
   }
@@ -107,11 +107,11 @@ const Lists: React.FC<ListsProps> = ({
       const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
       if (diffDays === 0 && date.getDate() === now.getDate()) {
-          return `Today at ${timeStr}`;
+          return t('lists.today_at', { date: t('event_modal.today'), time: timeStr });
       } else if (diffDays === 1 || (diffDays === 0 && date.getDate() !== now.getDate())) {
-          return `Yesterday at ${timeStr}`;
+          return t('lists.yesterday_at', { time: timeStr });
       } else {
-          return `${date.toLocaleDateString()} at ${timeStr}`;
+          return t('lists.today_at', { date: date.toLocaleDateString(), time: timeStr });
       }
   };
 
@@ -123,7 +123,29 @@ const Lists: React.FC<ListsProps> = ({
       details
   });
 
-  // --- CHANGED: Removed Regex Parsing ---
+  const formatLogDetails = (details?: string) => {
+      if (!details) return '';
+      try {
+          // Attempt to parse as JSON (New Hybrid Format)
+          const data = JSON.parse(details);
+          if (data && data.key) {
+              const params = { ...data.params };
+              
+              // Special handling: If priority is a param, translate it dynamically
+              if (params.priority) {
+                  params.priority = t(`priority.${params.priority.toLowerCase()}`);
+              }
+              
+              return t(data.key, params);
+          }
+          return details;
+      } catch (e) {
+          // Fallback: It's a legacy plain string log
+          return details;
+      }
+  };
+
+  // --- CHANGED: Removed Regex Parsing ----
   const parseInput = (text: string) => {
       // Logic barrier removed. Input is now always raw text.
       // Users can set Priority or Privacy via the Edit Modal after creation.
@@ -161,13 +183,14 @@ const Lists: React.FC<ListsProps> = ({
           note: '',
           
           userCategoryIds: smartCatId ? { [currentUser.id]: smartCatId } : {},
-          userPriorities: priority !== 'NORMAL' ? { [currentUser.id]: priority } : {},
+          priority: priority,
+          order: shoppingList.length, // Append to end by default
           seenByUserIds: [currentUser.id], 
           creatorCategoryId: smartCatId,
-          logs: [createLog('CREATE', `Added item "${content}"`)]
+          logs: [createLog('CREATE', JSON.stringify({ key: 'log.added_item', params: { item: content } }))]
       };
 
-      onUpdateShopping([...shoppingList, item]); 
+      onUpdateShopping([...shoppingList, item]);
       setNewItemText('');
       setShowHistory(false);
   };
@@ -179,10 +202,11 @@ const Lists: React.FC<ListsProps> = ({
             const seen = i.seenByUserIds || [];
             const nextSeen = seen.includes(currentUser.id) ? seen : [...seen, currentUser.id];
             
-            const logEntry = createLog(nextState ? 'COMPLETE' : 'RESTORE', nextState ? 'Marked as bought' : 'Restored to list');
+            const logKey = nextState ? 'log.marked_bought' : 'log.restored';
+            const logEntry = createLog(nextState ? 'COMPLETE' : 'RESTORE', JSON.stringify({ key: logKey }));
             
             return { 
-                ...i, 
+                ...i,
                 isInCart: nextState,
                 completedByUserId: nextState ? currentUser.id : undefined,
                 completedAt: nextState ? new Date().toISOString() : undefined,
@@ -220,6 +244,11 @@ const Lists: React.FC<ListsProps> = ({
       setSelectedItem(null);
   };
 
+  const isShoppingDirty = useMemo(() => {
+      if (!selectedItem || !editFormData) return false;
+      return JSON.stringify(editFormData) !== JSON.stringify(selectedItem);
+  }, [selectedItem, editFormData]);
+
   const saveEditForm = () => {
       if (!editFormData || !selectedItem) return;
       if (!editFormData.content.trim()) return;
@@ -229,27 +258,29 @@ const Lists: React.FC<ListsProps> = ({
               const newLogs = [...(i.logs || [])];
               
               if (i.content !== editFormData.content) {
-                  newLogs.unshift(createLog('UPDATE', `Renamed from "${i.content}" to "${editFormData.content}"`));
+                  newLogs.unshift(createLog('UPDATE', JSON.stringify({ 
+                      key: 'log.renamed', 
+                      params: { from: i.content, to: editFormData.content } 
+                  })));
               }
 
-              const oldPrio = getMyPriority(i);
+              const oldPrio = i.priority || 'NORMAL';
               const newPrio = (editFormData as any).priority || oldPrio;
               if (oldPrio !== newPrio) {
-                  newLogs.unshift(createLog('UPDATE', `Changed priority to ${newPrio}`));
+                  newLogs.unshift(createLog('UPDATE', JSON.stringify({ 
+                      key: 'log.priority_changed', 
+                      params: { priority: newPrio } 
+                  })));
               }
 
-              const base = {
+              return {
                   ...i,
                   content: editFormData.content,
                   note: editFormData.note,
                   isPrivate: editFormData.isPrivate,
+                  priority: newPrio,
                   logs: newLogs
               };
-              
-              const prios = { ...(i.userPriorities || {}) };
-              if (newPrio) prios[currentUser.id] = newPrio;
-
-              return { ...base, userPriorities: prios };
           }
           return i;
       });
@@ -297,6 +328,9 @@ const Lists: React.FC<ListsProps> = ({
            const seen = item.seenByUserIds || [];
            const nextSeen = seen.includes(currentUser.id) ? seen : [...seen, currentUser.id];
 
+           // Reset order when moving to a new category so it goes to end or stays predictable
+           // Actually, keeping existing order might be fine, but append is safer visually.
+           // For now, we just update category.
            const updated = shoppingList.map(i => i.id === draggedItemId ? { ...i, userCategoryIds: newCats, creatorCategoryId: creatorCat, seenByUserIds: nextSeen } : i);
            onUpdateShopping(updated);
       }
@@ -335,6 +369,55 @@ const Lists: React.FC<ListsProps> = ({
       if (!targetItem) return;
       
       const targetCatId = getMyCategoryId(targetItem);
+      const draggedItem = shoppingList.find(i => i.id === draggedItemId);
+      
+      if (!draggedItem) return;
+
+      // REORDER LOGIC: Only if in same category
+      if (getMyCategoryId(draggedItem) === targetCatId) {
+          // Get all relevant items sorted by current order
+          const visibleItemsInCat = shoppingList
+              .filter(i => getMyCategoryId(i) === targetCatId && !i.isInCart)
+              .sort((a, b) => (a.order || 0) - (b.order || 0));
+          
+          const fromIdx = visibleItemsInCat.findIndex(i => i.id === draggedItemId);
+          const toIdx = visibleItemsInCat.findIndex(i => i.id === targetItemId);
+          
+          if (fromIdx !== -1 && toIdx !== -1) {
+              const newSorted = [...visibleItemsInCat];
+              const [moved] = newSorted.splice(fromIdx, 1);
+              
+              // Adjust Drop Index based on Visual Position (Top vs Bottom)
+              let insertAt = toIdx;
+              if (dragOverPosition === 'bottom') insertAt++;
+              
+              // Logic Fix: If we removed the item from an index *before* the target, 
+              // the target shifted left (index - 1), so we must adjust our insertion point.
+              if (fromIdx < insertAt) insertAt--;
+              
+              newSorted.splice(insertAt, 0, moved);
+              
+              // Create a map of ID -> New Order
+              const orderMap = new Map();
+              newSorted.forEach((item, index) => {
+                  orderMap.set(item.id, index);
+              });
+
+              // Apply updates to the main list
+              const updatedList = shoppingList.map(i => {
+                  if (orderMap.has(i.id)) {
+                      return { ...i, order: orderMap.get(i.id) };
+                  }
+                  return i;
+              });
+              
+              onUpdateShopping(updatedList);
+              setDraggedItemId(null);
+              return;
+          }
+      }
+
+      // Fallback: If different category, move to that category
       handleDropOnCategory(e, targetCatId);
   };
 
@@ -372,10 +455,16 @@ const Lists: React.FC<ListsProps> = ({
               items: itemsByCategory[cat.id] || []
           }));
 
-          const finalCats = hideEmpty ? catsWithItems.filter(c => c.items.length > 0) : catsWithItems;
+          // SORT ITEMS BY ORDER
+          const finalCats = catsWithItems.map(c => ({
+              ...c,
+              items: c.items.sort((a, b) => (a.order || 0) - (b.order || 0))
+          }));
 
-          if (!hideEmpty || finalCats.length > 0) {
-              tree.push({ type: 'STORE', data: store, children: finalCats });
+          const visibleCats = hideEmpty ? finalCats.filter(c => c.items.length > 0) : finalCats;
+
+          if (!hideEmpty || visibleCats.length > 0) {
+              tree.push({ type: 'STORE', data: store, children: visibleCats });
           }
       });
 
@@ -392,7 +481,7 @@ const Lists: React.FC<ListsProps> = ({
       }
 
       if (uncategorizedItems.length > 0) {
-          tree.push({ type: 'UNCATEGORIZED', items: uncategorizedItems });
+          tree.push({ type: 'UNCATEGORIZED', items: uncategorizedItems.sort((a,b) => (a.order || 0) - (b.order || 0)) });
       }
 
       return tree;
@@ -445,6 +534,18 @@ const Lists: React.FC<ListsProps> = ({
       setNewItemText('');
   };
 
+  const isTodoDirty = useMemo(() => {
+      if (!selectedTodo) return false;
+      const compare = { ...selectedTodo, ...todoFormData };
+      // Check specific fields that are editable
+      return (
+          compare.content !== selectedTodo.content ||
+          compare.deadline !== selectedTodo.deadline ||
+          compare.note !== selectedTodo.note ||
+          compare.priority !== selectedTodo.priority
+      );
+  }, [selectedTodo, todoFormData]);
+
   const saveTodoEdit = () => {
       if (!selectedTodo || !todoFormData.content?.trim()) return;
       const updated = todos.map(t => t.id === selectedTodo.id ? { 
@@ -463,28 +564,11 @@ const Lists: React.FC<ListsProps> = ({
       onUpdateTodos(keep);
   };
   
-  const getTodoDateValue = (isoString?: string) => {
-      if (!isoString) return '';
-      const date = new Date(isoString);
-      const y = date.getFullYear();
-      const m = (date.getMonth() + 1).toString().padStart(2, '0');
-      const d = date.getDate().toString().padStart(2, '0');
-      return `${y}-${m}-${d}`;
-  };
-
-  const getTodoDisplayDate = (isoString?: string) => {
-      if (!isoString) return 'No Deadline';
-      const date = new Date(isoString);
-      return date.toLocaleDateString('en-US', { weekday: 'short', month: 'long', day: 'numeric' });
-  };
-
-  const setTodoDate = (dateStr: string) => {
-      if (!dateStr) {
+  const setTodoDate = (date: Date | null) => {
+      if (!date) {
           setTodoFormData({ ...todoFormData, deadline: undefined });
           return;
       }
-      const [y, m, d] = dateStr.split('-').map(Number);
-      const date = new Date(y, m - 1, d);
       setTodoFormData({ ...todoFormData, deadline: date.toISOString() });
   };
 
@@ -492,15 +576,15 @@ const Lists: React.FC<ListsProps> = ({
     <div className="flex flex-col h-full bg-gray-50 dark:bg-gray-900 relative overflow-hidden">
       
       {/* Shopping Detail View Modal */}
-      {selectedItem && editFormData && (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setSelectedItem(null)}>
+      {selectedItem && editFormData && createPortal(
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setSelectedItem(null)}>
               <div 
                   className="bg-white dark:bg-gray-800 w-full max-w-sm rounded-2xl shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col h-full sm:h-auto sm:max-h-[90vh]" 
                   onClick={e => e.stopPropagation()}
               >
                   {/* Header */}
                   <div className="flex justify-between items-center p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 sticky top-0 z-10 shrink-0">
-                      <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100 uppercase tracking-wide">Edit Item</h3>
+                      <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100 uppercase tracking-wide">{t('item_modal.edit_item')}</h3>
                       <button onClick={() => setSelectedItem(null)} className="p-2 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full text-gray-500 dark:text-gray-400"><X size={20}/></button>
                   </div>
 
@@ -508,7 +592,7 @@ const Lists: React.FC<ListsProps> = ({
                   <div className="p-5 flex flex-col gap-6 overflow-y-auto custom-scrollbar flex-1">
                       {/* Name */}
                       <div>
-                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Item Name</label>
+                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t('item_modal.item_name')}</label>
                           <input 
                               type="text" 
 							  name="editShopItemName"
@@ -521,7 +605,7 @@ const Lists: React.FC<ListsProps> = ({
 
                       {/* Note */}
                       <div>
-                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Note</label>
+                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t('item_modal.note')}</label>
                           <textarea 
                               rows={3}
 							  name="editShopItemNote"
@@ -531,12 +615,12 @@ const Lists: React.FC<ListsProps> = ({
                           />
                       </div>
 
-                      {/* My Priority */}
+                      {/* Priority (Global) */}
                       <div>
-                        <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-2 block">My Priority</label>
+                        <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-2 block">{t('item_modal.priority')}</label>
                         <div className="flex gap-2">
                           {(['URGENT', 'NORMAL', 'LOW'] as PriorityLevel[]).map(p => {
-                              const currentPrio = (editFormData as any).priority || getMyPriority(selectedItem);
+                              const currentPrio = (editFormData as any).priority || selectedItem.priority || 'NORMAL';
                               const isSelected = currentPrio === p;
                               return (
                                   <button 
@@ -546,7 +630,7 @@ const Lists: React.FC<ListsProps> = ({
                                   >
                                       {p === 'URGENT' && <AlertCircle size={12} />}
                                       {p === 'LOW' && <ArrowDown size={12} />}
-                                      {p}
+                                      {t(`priority.${p.toLowerCase()}`)}
                                   </button>
                               )
                           })}
@@ -555,7 +639,7 @@ const Lists: React.FC<ListsProps> = ({
 
                       {/* Audit Log */}
                       <div className="border-t dark:border-gray-700 pt-4">
-                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-2 block">Activity History</label>
+                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-2 block">{t('item_modal.activity_history')}</label>
                           <div className="bg-gray-50 dark:bg-gray-700/30 rounded-lg p-3 border border-gray-100 dark:border-gray-700 space-y-3 max-h-40 overflow-y-auto custom-scrollbar">
                               {(selectedItem.logs || []).map(log => {
                                   const u = users.find(u => u.id === log.userId);
@@ -565,7 +649,7 @@ const Lists: React.FC<ListsProps> = ({
                                           <div className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0" style={{backgroundColor: color}}></div>
                                           <div>
                                               <p className="text-xs text-gray-700 dark:text-gray-300">
-                                                  <span className="font-bold">{u?.username || 'Unknown'}</span>: {log.details}
+                                                  <span className="font-bold">{u?.username || t('lists.unknown_user')}</span>: {formatLogDetails(log.details)}
                                               </p>
                                               <p className="text-[0.65rem] text-gray-400 dark:text-gray-500">{formatRelativeTime(log.timestamp)}</p>
                                           </div>
@@ -575,7 +659,7 @@ const Lists: React.FC<ListsProps> = ({
                               {(!selectedItem.logs || selectedItem.logs.length === 0) && (
                                   <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
                                       <Plus size={12} className="text-gray-400" />
-                                      <span>Added by <b>{getUsername(selectedItem.addedByUserId)}</b></span>
+                                      <span>{t('item_modal.added_by')} <b>{getUsername(selectedItem.addedByUserId)}</b></span>
                                       <span className="text-gray-400 dark:text-gray-500">{new Date(selectedItem.addedAt).toLocaleDateString()}</span>
                                   </div>
                               )}
@@ -587,29 +671,36 @@ const Lists: React.FC<ListsProps> = ({
                   {/* Footer */}
                   <div className="p-4 border-t dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 flex gap-3 sticky bottom-0 z-10 shrink-0">
                       <button onClick={() => deleteShopItem(editFormData.id)} className="p-3 text-red-500 dark:text-red-400 font-bold bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl hover:bg-red-50 dark:hover:bg-red-900/20"><Trash2 size={20} /></button>
-                      <button onClick={saveEditForm} className="flex-1 py-3 text-white font-bold bg-blue-600 rounded-xl hover:bg-blue-700 shadow-lg flex items-center justify-center gap-2"><Save size={18} /> Save Changes</button>
+                      <button 
+                        onClick={saveEditForm} 
+                        disabled={!isShoppingDirty}
+                        className="flex-1 py-3 text-white font-bold bg-blue-600 rounded-xl hover:bg-blue-700 shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <Save size={18} /> {t('item_modal.save_changes')}
+                      </button>
                   </div>
               </div>
-          </div>
+          </div>,
+          document.body
       )}
 
       {/* Todo Edit Modal */}
-      {selectedTodo && (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setSelectedTodo(null)}>
+      {selectedTodo && createPortal(
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setSelectedTodo(null)}>
               <div 
                   className="bg-white dark:bg-gray-800 w-full max-w-sm rounded-2xl shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col h-full sm:h-auto sm:max-h-[90vh]" 
                   onClick={e => e.stopPropagation()}
               >
                   {/* Header */}
                   <div className="flex justify-between items-center p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 sticky top-0 z-10 shrink-0">
-                      <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100 uppercase tracking-wide">Edit Task</h3>
+                      <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100 uppercase tracking-wide">{t('item_modal.edit_task')}</h3>
                       <button onClick={() => setSelectedTodo(null)} className="p-2 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full text-gray-500 dark:text-gray-400"><X size={20}/></button>
                   </div>
                   
                   <div className="p-5 flex flex-col gap-6 flex-1 overflow-y-auto custom-scrollbar">
                       {/* Name */}
                       <div>
-                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Task Name</label>
+                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t('item_modal.task_name')}</label>
                           <input 
                               type="text" 
 							  name="editTodoContent"
@@ -622,34 +713,30 @@ const Lists: React.FC<ListsProps> = ({
                       
                       {/* Deadline */}
                       <div>
-                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Due Date</label>
-                          <div className="relative group">
-                               {/* VISIBLE MASK */}
-                               <div className="bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center px-3 py-2 gap-2 h-10 border border-transparent group-hover:border-blue-300 dark:group-hover:border-blue-700 transition-colors">
-                                  <CalendarClock size={16} className="text-gray-500 dark:text-gray-400 shrink-0"/>
-                                  <span className={`text-sm font-medium truncate ${!todoFormData.deadline ? 'text-gray-400 italic' : 'text-gray-800 dark:text-white'}`}>
-                                      {getTodoDisplayDate(todoFormData.deadline)}
-                                  </span>
-                               </div>
-
-                               {/* INVISIBLE TRIGGER */}
-                               <input 
-                                   type="date"
-								   name="editTodoDeadline"
-                                   value={getTodoDateValue(todoFormData.deadline)}
-                                   onChange={(e) => setTodoDate(e.target.value)}
-                                   onClick={(e) => e.currentTarget.showPicker()}
-                                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 top-6"
+                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t('item_modal.due_date')}</label>
+                          <div className="relative">
+                               <CalendarClock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 pointer-events-none z-10"/>
+                               <DatePicker 
+                                   selected={todoFormData.deadline ? new Date(todoFormData.deadline) : null}
+                                   onChange={setTodoDate}
+                                   placeholderText={t('item_modal.no_deadline')}
+                                   dateFormat={t('formats.date_picker')}
+                                   className="w-full pl-10 pr-8 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg text-sm font-medium text-gray-800 dark:text-white border-transparent focus:border-blue-500 focus:ring-0 cursor-pointer"
+                                   portalId="root"
+                                   locale={currentUser.preferences?.language?.split('-')[0] || 'en'}
+                                   showMonthDropdown
+                                   showYearDropdown
+                                   dropdownMode="select"
                                />
                                {todoFormData.deadline && (
-                                   <button onClick={(e) => { e.stopPropagation(); setTodoDate(''); }} className="absolute right-2 bottom-2.5 z-20 p-0.5 bg-gray-200 dark:bg-gray-600 rounded-full text-gray-500 hover:text-red-500" title="Clear Date"><X size={12} /></button>
+                                   <button onClick={(e) => { e.stopPropagation(); setTodoDate(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 z-20 p-0.5 bg-gray-200 dark:bg-gray-600 rounded-full text-gray-500 hover:text-red-500" title="Clear Date"><X size={12} /></button>
                                )}
                           </div>
                       </div>
 
                       {/* Priority */}
                       <div>
-                        <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-2 block">Priority</label>
+                        <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-2 block">{t('item_modal.priority')}</label>
                         <div className="flex gap-2">
                           {(['URGENT', 'NORMAL', 'LOW'] as PriorityLevel[]).map(p => {
                               const isSelected = (todoFormData.priority || 'NORMAL') === p;
@@ -661,7 +748,7 @@ const Lists: React.FC<ListsProps> = ({
                                   >
                                       {p === 'URGENT' && <AlertCircle size={12} />}
                                       {p === 'LOW' && <ArrowDown size={12} />}
-                                      {p}
+                                      {t(`priority.${p.toLowerCase()}`)}
                                   </button>
                               )
                           })}
@@ -670,14 +757,14 @@ const Lists: React.FC<ListsProps> = ({
 
                       {/* Note */}
                       <div>
-                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Note</label>
+                          <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t('item_modal.note')}</label>
                           <textarea 
                               rows={3}
 							  name="editTodoNote"
                               value={todoFormData.note || ''}
                               onChange={(e) => setTodoFormData({ ...todoFormData, note: e.target.value })}
                               className="w-full bg-gray-50 dark:bg-gray-700 rounded-lg p-3 text-sm focus:bg-white dark:focus:bg-gray-600 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-800 outline-none resize-none dark:text-white dark:placeholder-gray-500"
-                              placeholder="Add details..."
+                              placeholder={t('item_modal.add_details')}
                           />
                       </div>
                   </div>
@@ -685,19 +772,26 @@ const Lists: React.FC<ListsProps> = ({
                   {/* Footer */}
                   <div className="p-4 border-t dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 flex gap-3 sticky bottom-0 z-10 shrink-0">
                       <button onClick={() => deleteTodo(selectedTodo.id)} className="p-3 text-red-500 dark:text-red-400 font-bold bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl hover:bg-red-50 dark:hover:bg-red-900/20"><Trash2 size={20} /></button>
-                      <button onClick={saveTodoEdit} className="flex-1 py-3 text-white font-bold bg-blue-600 rounded-xl hover:bg-blue-700 shadow-lg flex items-center justify-center gap-2"><Save size={18} /> Save Changes</button>
+                      <button 
+                        onClick={saveTodoEdit} 
+                        disabled={!isTodoDirty}
+                        className="flex-1 py-3 text-white font-bold bg-blue-600 rounded-xl hover:bg-blue-700 shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <Save size={18} /> {t('item_modal.save_changes')}
+                      </button>
                   </div>
               </div>
-          </div>
+          </div>,
+          document.body
       )}
 
       {/* Tabs */}
       <div className="flex bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shrink-0">
         <button onClick={() => onTabChange('shopping')} className={`flex-1 py-3 text-xs sm:text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2 ${currentTab === 'shopping' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400' : 'text-gray-400 dark:text-gray-500'}`}>
-          <ShoppingCart size={16} /> Shopping
+          <ShoppingCart size={16} /> {t('lists.shopping')}
         </button>
         <button onClick={() => onTabChange('todos')} className={`flex-1 py-3 text-xs sm:text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2 ${currentTab === 'todos' ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400' : 'text-gray-400 dark:text-gray-500'}`}>
-          <CheckSquare size={16} /> To-Do
+          <CheckSquare size={16} /> {t('lists.todo')}
         </button>
       </div>
 
@@ -705,14 +799,14 @@ const Lists: React.FC<ListsProps> = ({
       {currentTab === 'shopping' && (
           <div className="bg-white dark:bg-gray-800 p-3 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center shrink-0">
               <div className="text-xs font-bold text-gray-500 dark:text-gray-400">
-                  {shoppingList.filter(i => !i.isInCart).length} items remaining
+                  {t('lists.items_remaining', {count: shoppingList.filter(i => !i.isInCart).length})}
               </div>
               <button 
                 onClick={() => setHideEmpty(!hideEmpty)} 
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${hideEmpty ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}
               >
                   {hideEmpty ? <Eye size={14} /> : <Eye size={14} className="text-gray-400" />}
-                  {hideEmpty ? 'Show All' : 'Hide Empty'}
+                  {hideEmpty ? t('lists.show_all') : t('lists.hide_empty')}
               </button>
           </div>
       )}
@@ -727,7 +821,7 @@ const Lists: React.FC<ListsProps> = ({
             onChange={(e) => { setNewItemText(e.target.value); setShowHistory(true); }}
             onFocus={() => setShowHistory(true)}
             onKeyDown={(e) => e.key === 'Enter' && (currentTab === 'shopping' ? addShoppingItem() : addTodo())}
-            placeholder={currentTab === 'shopping' ? "Add item" : "Add task"}
+            placeholder={currentTab === 'shopping' ? t('lists.add_item') : t('lists.add_task')}
             className="flex-1 bg-gray-100 dark:bg-gray-700 border-0 rounded-lg px-4 text-sm focus:ring-2 focus:ring-blue-500 dark:text-white"
           />
           <button onClick={() => currentTab === 'shopping' ? addShoppingItem() : addTodo()} className="bg-blue-600 text-white px-3 sm:px-4 rounded-lg hover:bg-blue-700 active:scale-95 transition-transform"><Plus size={20} /></button>
@@ -764,7 +858,7 @@ const Lists: React.FC<ListsProps> = ({
                                         key={cat.id} 
                                         category={cat} 
                                         items={cat.items} 
-                                        {...{handleDragStart, handleDragEnd, handleDragOver, handleDropOnCategory, handleDropOnItem, handleItemDragEnter, handleItemDragOver, handleCatDragEnter, dragOverCatId, dragOverTargetId, dragOverPosition, toggleShopItem, setSelectedItem, getUserColor, currentUser, getMyPriority, categories, acceptSuggestion, stores}} 
+                                        {...{handleDragStart, handleDragEnd, handleDragOver, handleDropOnCategory, handleDropOnItem, handleItemDragEnter, handleItemDragOver, handleCatDragEnter, dragOverCatId, dragOverTargetId, dragOverPosition, toggleShopItem, setSelectedItem, getUserColor, currentUser, users, categories, acceptSuggestion, stores}} 
                                     />
                                 ))}
                             </div>
@@ -777,7 +871,7 @@ const Lists: React.FC<ListsProps> = ({
                                         key={cat.id} 
                                         category={cat} 
                                         items={cat.items} 
-                                        {...{handleDragStart, handleDragEnd, handleDragOver, handleDropOnCategory, handleDropOnItem, handleItemDragEnter, handleItemDragOver, handleCatDragEnter, dragOverCatId, dragOverTargetId, dragOverPosition, toggleShopItem, setSelectedItem, getUserColor, currentUser, getMyPriority, categories, acceptSuggestion, stores}} 
+                                        {...{handleDragStart, handleDragEnd, handleDragOver, handleDropOnCategory, handleDropOnItem, handleItemDragEnter, handleItemDragOver, handleCatDragEnter, dragOverCatId, dragOverTargetId, dragOverPosition, toggleShopItem, setSelectedItem, getUserColor, currentUser, users, categories, acceptSuggestion, stores}} 
                                     />
                                 ))}
                             </div>
@@ -791,7 +885,7 @@ const Lists: React.FC<ListsProps> = ({
                             >
                                 <div className="flex items-center gap-2 px-1">
                                     <Tag size={12} className="text-gray-300 dark:text-gray-600"/>
-                                    <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Uncategorized</h3>
+                                    <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{t('lists.uncategorized')}</h3>
                                     <div className="h-px bg-gray-200 dark:bg-gray-700 flex-1"></div>
                                 </div>
                                 <div className={`space-y-1 p-2 rounded-lg transition-colors ${dragOverCatId === 'uncat' ? 'bg-blue-50 dark:bg-blue-900/20 ring-1 ring-blue-300 dark:ring-blue-700' : ''}`}>
@@ -799,7 +893,8 @@ const Lists: React.FC<ListsProps> = ({
                                         <ShoppingItemRow 
                                             key={item.id} 
                                             item={item} 
-                                            {...{handleDragStart, handleDragEnd, handleDropOnItem, handleItemDragEnter, handleItemDragOver, dragOverTargetId, dragOverPosition, toggleShopItem, setSelectedItem, getUserColor, currentUser, getMyPriority, categories, acceptSuggestion, stores}}
+                                            users={users} 
+                                            {...{handleDragStart, handleDragEnd, handleDropOnItem, handleItemDragEnter, handleItemDragOver, dragOverTargetId, dragOverPosition, toggleShopItem, setSelectedItem, getUserColor, currentUser, categories, acceptSuggestion, stores}}
                                         />
                                     ))}
                                 </div>
@@ -812,7 +907,7 @@ const Lists: React.FC<ListsProps> = ({
                 {shoppingList.length === 0 && (
                     <div className="text-center text-gray-400 dark:text-gray-600 mt-10 flex flex-col items-center">
                         <ShoppingBag size={48} className="opacity-20 mb-2"/>
-                        <p>List is empty</p>
+                        <p>{t('lists.empty_shopping')}</p>
                     </div>
                 )}
             </>
@@ -820,7 +915,7 @@ const Lists: React.FC<ListsProps> = ({
         
         {currentTab === 'todos' && (
              <div className="space-y-2">
-                {myTodos.length === 0 && <div className="text-center text-gray-400 dark:text-gray-600 mt-10">Nothing to do!</div>}
+                {myTodos.length === 0 && <div className="text-center text-gray-400 dark:text-gray-600 mt-10">{t('lists.empty_todo')}</div>}
                 {myTodos.map(item => {
                     const saving = isSaving(item.id);
                     return (
@@ -847,14 +942,14 @@ const Lists: React.FC<ListsProps> = ({
                                     {item.priority === 'LOW' && <ArrowDown size={14} className="text-blue-400 shrink-0" />}
                                     
                                     <span className={`block font-medium truncate leading-tight ${item.isCompleted ? 'line-through text-gray-500' : 'text-gray-800 dark:text-gray-200'} ${saving ? 'italic text-gray-400' : ''}`}>
-                                        {item.content} {saving && "(Saving...)"}
+                                        {item.content} {saving && t('lists.saving')}
                                     </span>
                                 </div>
                                 <div className="flex items-center gap-3 mt-1">
                                     {item.deadline && (
                                         <div className={`flex items-center gap-1 text-xs font-bold ${item.priority === 'URGENT' ? 'text-red-500 dark:text-red-400' : 'text-gray-400 dark:text-gray-500'}`}>
                                             <CalendarClock size={12} />
-                                            <span>Due: {new Date(item.deadline).toLocaleDateString()}</span>
+                                            <span>{t('item_modal.due_date')}: {new Date(item.deadline).toLocaleDateString()}</span>
                                         </div>
                                     )}
                                     {item.note && (
@@ -874,7 +969,7 @@ const Lists: React.FC<ListsProps> = ({
       {currentTab === 'shopping' && shoppingList.some(i => i.isInCart) && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 animate-in slide-in-from-bottom-5 w-auto">
               <button onClick={clearCart} className="px-6 py-3 text-sm font-bold text-white bg-red-600 rounded-xl hover:bg-red-700 flex items-center justify-center gap-2 shadow-xl shadow-red-200 dark:shadow-red-900/20 active:scale-95 transition-all whitespace-nowrap">
-                  <Trash2 size={16} /> Clear Checked Items
+                  <Trash2 size={16} /> {t('lists.clear_checked')}
               </button>
           </div>
       )}
@@ -882,7 +977,7 @@ const Lists: React.FC<ListsProps> = ({
       {currentTab === 'todos' && myTodos.some(t => t.isCompleted) && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 animate-in slide-in-from-bottom-5 w-auto">
               <button onClick={clearCompletedTodos} className="px-6 py-3 text-sm font-bold text-white bg-red-600 rounded-xl hover:bg-red-700 flex items-center justify-center gap-2 shadow-xl shadow-red-200 dark:shadow-red-900/20 active:scale-95 transition-all whitespace-nowrap">
-                  <Trash2 size={16} /> Clear Completed Tasks
+                  <Trash2 size={16} /> {t('lists.clear_completed')}
               </button>
           </div>
       )}
@@ -892,6 +987,7 @@ const Lists: React.FC<ListsProps> = ({
 
 // Sub-Components
 const CategoryBlock = ({ category, items, handleDragOver, handleDropOnCategory, handleCatDragEnter, dragOverCatId, ...props }: any) => {
+    const { t } = useTranslation();
     const isDragTarget = dragOverCatId === category.id;
     return (
         <div 
@@ -908,7 +1004,7 @@ const CategoryBlock = ({ category, items, handleDragOver, handleDropOnCategory, 
             </div>
             {items.length === 0 && (
                 <div className={`h-8 border border-dashed rounded flex items-center justify-center text-[0.6rem] transition-colors ${isDragTarget ? 'border-blue-400 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-bold' : 'border-gray-200 dark:border-gray-700 text-gray-300 dark:text-gray-600'}`}>
-                    {isDragTarget ? 'Drop to add to category' : 'Drop items here'}
+                    {isDragTarget ? t('lists.drop_add') : t('lists.drop_here')}
                 </div>
             )}
         </div>
@@ -916,16 +1012,20 @@ const CategoryBlock = ({ category, items, handleDragOver, handleDropOnCategory, 
 }
 
 const ShoppingItemRow = ({ 
-    item, currentUser, getUserColor, toggleShopItem, setSelectedItem, 
+    item, currentUser, users, getUserColor, toggleShopItem, setSelectedItem, 
     handleDragStart, handleDragEnd, handleDropOnItem, handleItemDragEnter, handleItemDragOver, dragOverTargetId, dragOverPosition,
-    getMyPriority, categories, acceptSuggestion, stores
+    categories, acceptSuggestion, stores
 }: any) => {
+    const { t } = useTranslation();
     const isDragTarget = dragOverTargetId === item.id;
-    const myPriority = getMyPriority(item);
+    const myPriority = item.priority || 'NORMAL';
     const isNew = !item.seenByUserIds?.includes(currentUser.id) && item.addedByUserId !== currentUser.id;
     const suggestionCatId = item.creatorCategoryId;
     const showSuggestion = suggestionCatId && !item.userCategoryIds?.[currentUser.id];
     
+    // FIX: Look up the user object to get the correct color
+    const addedByUser = users?.find((u: User) => u.id === item.addedByUserId);
+
     let suggestionText = null;
     if (showSuggestion) {
         const cat = categories.find((c: any) => c.id === suggestionCatId);
@@ -953,7 +1053,7 @@ const ShoppingItemRow = ({
                 ${isDragTarget && dragOverPosition === 'bottom' ? 'border-b-2 border-b-blue-500 rounded-b-none mb-1' : ''}
                 ${!isDragTarget ? 'my-0' : ''}
             `}
-            style={{ borderLeftColor: getUserColor(item.addedByUserId) }}
+            style={{ borderLeftColor: getUserColor(addedByUser) }}
         >
             <div className={`flex items-center gap-2 flex-1 min-w-0 ${item.isInCart ? 'opacity-40 grayscale' : ''}`}>
                 <div className={`text-gray-300 dark:text-gray-600 shrink-0 ${saving ? '' : 'cursor-grab hover:text-gray-500 dark:hover:text-gray-400'}`}>
@@ -978,7 +1078,7 @@ const ShoppingItemRow = ({
                         {item.isPrivate && <Lock size={12} className="text-gray-400 shrink-0" />}
                         
                         <span className={`text-sm font-bold truncate leading-tight ${item.isInCart ? 'line-through text-gray-500 dark:text-gray-500' : 'text-gray-800 dark:text-gray-100'} ${saving ? 'italic text-gray-400' : ''}`}>
-                            {item.content} {saving && "(Saving...)"}
+                            {item.content} {saving && t('lists.saving')}
                         </span>
                     </div>
                     {suggestionText && (
@@ -986,7 +1086,7 @@ const ShoppingItemRow = ({
                            onClick={(e) => { e.stopPropagation(); acceptSuggestion(item); }}
                            className="text-[0.6rem] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 px-1.5 py-0.5 rounded self-start mt-1 hover:bg-blue-100 dark:hover:bg-blue-900/40"
                         >
-                            Suggested: {suggestionText}
+                            {t('lists.suggested')}: {suggestionText}
                         </button>
                     )}
                     {item.note && (

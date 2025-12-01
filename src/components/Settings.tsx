@@ -1,11 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { User, CalendarEvent, ShoppingItem, TodoItem, SystemSettings, ShoppingStore, ShoppingCategory } from '../types';
 import { PALETTES, PaletteKey } from '../constants';
-import { Shield, UserPlus, Trash2, AlertTriangle, Edit2, Check, X, Palette, Download, Upload, Database, CloudSun, Search, MapPin, Store, GripVertical, Image as ImageIcon, Smile, Calendar, Lock, User as UserIcon, Key, CheckCircle, Type, Plus } from 'lucide-react';
+import { Shield, UserPlus, Trash2, AlertTriangle, Edit2, Check, X, Palette, Download, Upload, Database, CloudSun, Search, MapPin, Store, GripVertical, Image as ImageIcon, Smile, Calendar, Lock, Key, CheckCircle, Type, Plus, HelpCircle, FileDown, FileUp } from 'lucide-react';
 import { fetchAvailableCountries, getUniqueSubdivisions, CountryInfo, searchCity } from '../services/integrations';
 import { storage } from '../services/storage';
+import { generateICS, parseICS } from '../services/ical';
+import { saveAs } from 'file-saver';
 import { useUser } from '../contexts/UserContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { useTranslation } from 'react-i18next';
+import DatePicker from 'react-datepicker';
 
 interface SettingsProps {
   events: CalendarEvent[];
@@ -33,6 +37,7 @@ const Settings: React.FC<SettingsProps> = ({
   // CONTEXT HOOKS
   const { users, currentUser, updateUsers: onUpdateUsers } = useUser();
   const { paletteKey, activePalette, updatePaletteKey: onUpdatePaletteKey } = useTheme();
+  const { t, i18n } = useTranslation();
 
   const [newUserName, setNewUserName] = useState('');
   const [newUserPass, setNewUserPass] = useState('');
@@ -58,8 +63,10 @@ const Settings: React.FC<SettingsProps> = ({
 
   const [pruneStatus, setPruneStatus] = useState<{type: 'success'|'error', msg: string} | null>(null);
   const [backupStatus, setBackupStatus] = useState<{type: 'success'|'error', msg: string} | null>(null);
+  const [importStatus, setImportStatus] = useState<{type: 'success'|'error', msg: string} | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const icalInputRef = useRef<HTMLInputElement>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
   const [newStoreName, setNewStoreName] = useState('');
@@ -97,8 +104,12 @@ const Settings: React.FC<SettingsProps> = ({
   }, []);
 
   useEffect(() => {
-    if (stores.length > 0 && !newCatStoreId) {
-        setNewCatStoreId(stores[0].id);
+    // Auto-select first store if none selected OR if selected ID no longer exists (ID Swap)
+    if (stores.length > 0) {
+        const isValid = stores.find(s => s.id === newCatStoreId);
+        if (!newCatStoreId || !isValid) {
+            setNewCatStoreId(stores[0].id);
+        }
     }
   }, [stores, newCatStoreId]);
 
@@ -128,12 +139,12 @@ const addUser = async () => {
     if (!cleanName || !cleanPass) return;
     
     if (cleanPass.length < 8) {
-        triggerValidationError('new-user', 'Password min 8 chars');
+        triggerValidationError('new-user-pass', t('messages.pass_min_chars'));
         return;
     }
 
     if (users.some(u => u.username.toLowerCase() === cleanName.toLowerCase())) {
-        triggerValidationError('new-user', 'Name taken');
+        triggerValidationError('new-user-name', t('messages.name_taken'));
         return;
     }
 
@@ -145,7 +156,7 @@ const addUser = async () => {
         setNewUserPass('');
     } catch (e) {
         console.error(e);
-        triggerValidationError('new-user', 'Failed to create');
+        triggerValidationError('new-user', t('messages.failed_create'));
     }
   };
 
@@ -164,7 +175,7 @@ const addUser = async () => {
         u.id === currentUser.id ? { ...u, fontSizeScale: scale } : u
       ), true);
   };
-  
+
   const updatePreference = (key: 'showWeather' | 'showMoonPhases' | 'showHolidays', val: boolean) => {
       onUpdateUsers(users.map(u => 
           u.id === currentUser.id ? { ...u, preferences: { ...u.preferences!, [key]: val } } : u
@@ -181,7 +192,7 @@ const addUser = async () => {
 
   const handleUpdateUser = async (updatedUser: User) => {
       if (users.some(u => u.id !== updatedUser.id && u.username.toLowerCase() === updatedUser.username.trim().toLowerCase())) {
-          triggerValidationError('edit-user-name', 'Name taken');
+          triggerValidationError('edit-user-name', t('messages.name_taken'));
           return;
       }
 
@@ -233,24 +244,24 @@ const addUser = async () => {
   const handleSubmitPassword = async () => {
       if (!passModalUser || !passNew.trim()) return;
       if (passNew.length < 8) {
-          setPassError('Password must be 8+ characters');
+          setPassError(t('messages.pass_min_chars'));
           return;
       }
       
       const isSelf = passModalUser.id === currentUser.id;
       if (isSelf && !passOld) {
-          setPassError('Current password required');
+          setPassError(t('messages.current_pass_required'));
           return;
       }
 
       try {
           await storage.updateUserPassword(passModalUser.id, passNew, isSelf ? passOld : undefined);
-          setPassSuccess('Password updated!');
+          setPassSuccess(t('messages.pass_updated'));
           setPassError('');
           setTimeout(() => setPassModalUser(null), 1500); 
       } catch (e: any) {
           console.error(e);
-          setPassError('Failed to update. Check current password.');
+          setPassError(t('messages.pass_update_fail'));
       }
   }
 
@@ -281,7 +292,7 @@ const addUser = async () => {
   const addStore = () => {
       if (!newStoreName.trim()) return;
       if (isStoreNameTaken(newStoreName.trim())) {
-          triggerValidationError('new-store', 'Name taken');
+          triggerValidationError('new-store', t('messages.name_taken'));
           return;
       }
 
@@ -302,7 +313,7 @@ const addUser = async () => {
   const saveStoreName = (id: string) => {
       if (!editStoreName.trim()) return;
       if (isStoreNameTaken(editStoreName.trim(), id)) {
-          triggerValidationError(id, 'Name taken');
+          triggerValidationError(id, t('messages.name_taken'));
           return;
       }
       onUpdateStores(stores.map(s => s.id === id ? { ...s, name: editStoreName.trim() } : s));
@@ -338,9 +349,22 @@ const addUser = async () => {
       setDraggedStoreId(null);
   }
 
+  const isCatNameTaken = (name: string, storeId?: string, excludeId?: string) => {
+      return categories.some(c => 
+          c.name.toLowerCase() === name.toLowerCase() && 
+          c.storeId === storeId && 
+          c.id !== excludeId
+      );
+  }
+
   const addCategory = () => {
       if (!newCatName.trim()) return;
       const targetStoreId = newCatStoreId || (stores.length > 0 ? stores[0].id : undefined);
+
+      if (isCatNameTaken(newCatName.trim(), targetStoreId)) {
+          triggerValidationError('new-cat', t('messages.name_taken'));
+          return;
+      }
 
       const newCat: ShoppingCategory = {
           id: Date.now().toString(),
@@ -359,6 +383,10 @@ const addUser = async () => {
 
   const saveCatName = (id: string) => {
       if (!editCatName.trim()) return;
+      if (isCatNameTaken(editCatName.trim(), editCatStoreId, id)) {
+          triggerValidationError(id, t('messages.name_taken'));
+          return;
+      }
       onUpdateCategories(categories.map(c => c.id === id ? { ...c, name: editCatName, storeId: editCatStoreId } : c));
       setEditingCatId(null);
   };
@@ -423,15 +451,63 @@ const addUser = async () => {
               const data = JSON.parse(content);
               await storage.restoreBackup(data);
               
-              // REPLACED ALERT WITH UI STATUS
-              setBackupStatus({ type: 'success', msg: 'Backup restored successfully. Reloading...' });
+              setBackupStatus({ type: 'success', msg: t('messages.backup_success') });
               setTimeout(() => {
                   window.location.reload();
-              }, 2000); // 2 second delay to read message
+              }, 2000); 
               
           } catch (err) {
-              setBackupStatus({ type: 'error', msg: 'Failed to parse backup file.' });
+              setBackupStatus({ type: 'error', msg: t('messages.backup_fail') });
               console.error(err);
+          }
+      };
+      reader.readAsText(file);
+  };
+
+  const handleExportIcal = () => {
+      // Filter events where current user is a participant
+      const myEvents = events.filter(e => e.userIds.includes(currentUser.id));
+      const icalString = generateICS(myEvents);
+      const blob = new Blob([icalString], { type: 'text/calendar;charset=utf-8' });
+      saveAs(blob, `familysync_${currentUser.username}.ics`);
+  };
+
+  const handleImportIcal = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      
+      // Reset status
+      setImportStatus(null);
+
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+          try {
+              const content = ev.target?.result as string;
+              const parsedEvents = await parseICS(content);
+              
+              if (parsedEvents.length === 0) {
+                  setImportStatus({ type: 'error', msg: t('settings.no_events_in_file') });
+                  return;
+              }
+
+              // Import Logic
+              // 1. Assign Current User
+              // 2. Preserve icalUID for future sync potential
+              const newEvents = parsedEvents.map(e => ({
+                  ...e,
+                  id: Date.now().toString() + Math.random(), // Temp ID
+                  userIds: [currentUser.id]
+              }));
+
+              onUpdateEvents([...events, ...newEvents as CalendarEvent[]]);
+              setImportStatus({ type: 'success', msg: t('settings.import_success', { count: newEvents.length }) });
+              
+              // Clear success message after 3 seconds
+              setTimeout(() => setImportStatus(null), 3000);
+
+          } catch (err) {
+              console.error(err);
+              setImportStatus({ type: 'error', msg: t('settings.import_error') });
           }
       };
       reader.readAsText(file);
@@ -442,10 +518,10 @@ const addUser = async () => {
       setPruneStatus(null);
 
       if (!pruneDate) {
-          setPruneStatus({ type: 'error', msg: 'Please select a date first.' });
+          setPruneStatus({ type: 'error', msg: t('messages.select_date_first') });
           return;
       }
-      const threshold = new Date(pruneDate + 'T00:00:00').getTime();
+      const threshold = new Date(pruneDate).getTime();
       
       const keep = events.filter(e => {
           const start = new Date(e.startTime).getTime();
@@ -460,12 +536,12 @@ const addUser = async () => {
       
       const deletedCount = events.length - keep.length;
       if (deletedCount === 0) {
-          setPruneStatus({ type: 'error', msg: `No events found strictly before ${pruneDate}.` });
+          setPruneStatus({ type: 'error', msg: t('messages.prune_none', { date: pruneDate }) });
           return;
       }
       
       onUpdateEvents(keep);
-      setPruneStatus({ type: 'success', msg: `Successfully pruned ${deletedCount} events.` });
+      setPruneStatus({ type: 'success', msg: t('messages.prune_success', { count: deletedCount }) });
       setPruneDate('');
       
       // Clear success message after 5 seconds
@@ -490,26 +566,34 @@ const addUser = async () => {
               <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-xs overflow-hidden animate-in zoom-in-95">
                   <div className="bg-gray-50 dark:bg-gray-700 p-4 border-b dark:border-gray-600 flex justify-between items-center">
                       <h3 className="font-bold text-gray-800 dark:text-white text-sm">
-                          {passModalUser.id === currentUser.id ? 'Change Password' : `Reset ${passModalUser.username}'s Password`}
+                          {passModalUser.id === currentUser.id ? t('settings.change_password_title') : t('settings.reset_password_title', { name: passModalUser.username })}
                       </h3>
                       <button onClick={() => setPassModalUser(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><X size={18}/></button>
                   </div>
                   <div className="p-4 space-y-3">
                       {passModalUser.id === currentUser.id && (
                           <div>
-                              <label htmlFor="oldPass" className="block text-[0.6rem] font-bold text-gray-400 uppercase mb-1">Current Password</label>
+                              <label htmlFor="oldPass" className="block text-[0.6rem] font-bold text-gray-400 uppercase mb-1">{t('settings.current_password')}</label>
                               <input type="password" id="oldPass" name="oldPass" value={passOld} onChange={e => setPassOld(e.target.value)} className="w-full border dark:border-gray-600 rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:text-white"/>
                           </div>
                       )}
                       <div>
-                          <label htmlFor="newPass" className="block text-[0.6rem] font-bold text-gray-400 uppercase mb-1">New Password (Min 8 chars)</label>
-                          <input type="password" id="newPass" name="newPass" value={passNew} onChange={e => setPassNew(e.target.value)} className="w-full border dark:border-gray-600 rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:text-white"/>
+                          <label htmlFor="newPass" className="block text-[0.6rem] font-bold text-gray-400 uppercase mb-1">{t('settings.new_password_min')}</label>
+                          <input 
+                            type="password" 
+                            id="newPass" 
+                            name="newPass" 
+                            value={passNew} 
+                            onChange={e => setPassNew(e.target.value)} 
+                            onKeyDown={e => e.key === 'Enter' && handleSubmitPassword()}
+                            className="w-full border dark:border-gray-600 rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:text-white"
+                          />
                       </div>
                       {passError && <div className="text-xs text-red-500 font-bold flex items-center gap-1"><AlertTriangle size={10}/> {passError}</div>}
                       {passSuccess && <div className="text-xs text-green-600 font-bold flex items-center gap-1"><CheckCircle size={10}/> {passSuccess}</div>}
                   </div>
                   <div className="p-4 border-t dark:border-gray-600 flex justify-end">
-                      <button onClick={handleSubmitPassword} disabled={!!passSuccess} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 disabled:opacity-50">Update Password</button>
+                      <button onClick={handleSubmitPassword} disabled={!!passSuccess} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 disabled:opacity-50">{t('settings.update_password')}</button>
                   </div>
               </div>
           </div>
@@ -519,7 +603,7 @@ const addUser = async () => {
         <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
                 <div className="bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600 p-4 flex justify-between items-center shrink-0">
-                    <h3 className="font-bold text-gray-800 dark:text-white">Edit Profile</h3>
+                    <h3 className="font-bold text-gray-800 dark:text-white">{t('settings.edit_profile')}</h3>
                     <button onClick={() => setEditingUser(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><X size={20} /></button>
                 </div>
                 <div className="p-6 space-y-6 overflow-y-auto custom-scrollbar">
@@ -530,14 +614,14 @@ const addUser = async () => {
                                 {editingUser.photoUrl ? <img src={editingUser.photoUrl} alt="Profile" className="w-full h-full object-cover" /> : editingUser.avatar}
                             </div>
                             <div className="flex-1">
-                                <h4 className="font-bold text-gray-800 dark:text-gray-200 text-sm mb-2">Profile Picture</h4>
+                                <h4 className="font-bold text-gray-800 dark:text-gray-200 text-sm mb-2">{t('settings.profile_picture')}</h4>
                                 <div className="flex gap-2">
                                     <button 
                                         type="button" 
                                         onClick={() => avatarInputRef.current?.click()}
                                         className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-300 text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                                     >
-                                        <ImageIcon size={14} /> Upload
+                                        <ImageIcon size={14} /> {t('settings.upload')}
                                     </button>
                                     {editingUser.photoUrl && (
                                         <button 
@@ -545,7 +629,7 @@ const addUser = async () => {
                                             onClick={() => setEditingUser({ ...editingUser, photoUrl: undefined })}
                                             className="text-red-500 text-xs font-bold hover:underline"
                                         >
-                                            Remove
+                                            {t('settings.remove')}
                                         </button>
                                     )}
                                 </div>
@@ -556,7 +640,7 @@ const addUser = async () => {
                         <div className="pt-3 border-t border-blue-100 dark:border-blue-800">
                             <div className="flex items-center gap-2 mb-2">
                                 <Smile size={14} className="text-blue-500" />
-                                <span className="text-[0.625rem] font-bold text-blue-700 dark:text-blue-300 uppercase">Or Choose Emoji</span>
+                                <span className="text-[0.625rem] font-bold text-blue-700 dark:text-blue-300 uppercase">{t('settings.choose_emoji')}</span>
                             </div>
                             <div className="grid grid-cols-5 gap-2">
                                 {EMOJI_LIST.map(emoji => (
@@ -574,7 +658,7 @@ const addUser = async () => {
                     </div>
 
                     <div className="relative">
-                        <label htmlFor="editUsername" className="block text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Display Name</label>
+                        <label htmlFor="editUsername" className="block text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">{t('settings.display_name')}</label>
                         <input type="text" id="editUsername" name="editUsername" value={editingUser.username} onChange={(e) => setEditingUser({ ...editingUser, username: e.target.value })} className={`w-full text-lg font-bold border-b-2 border-gray-200 dark:border-gray-600 focus:border-blue-500 outline-none py-1 text-gray-800 dark:text-white bg-transparent ${validationError?.id === 'edit-user-name' ? 'border-red-500 animate-shake' : ''}`}/>
                          {validationError?.id === 'edit-user-name' && (
                             <div className="absolute top-full left-0 mt-1 text-[0.6rem] text-red-500 font-bold flex items-center gap-1 bg-red-50 px-2 py-0.5 rounded shadow-sm z-10">
@@ -584,7 +668,7 @@ const addUser = async () => {
                     </div>
                     
                     <div>
-                        <label className="block text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Color Badge</label>
+                        <label className="block text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">{t('settings.color_badge')}</label>
                         <div className="grid grid-cols-5 gap-3">
                             {activePalette.map((hex, index) => {
                                 const isUsed = users.some(u => u.colorIndex === index && u.id !== editingUser.id);
@@ -599,7 +683,7 @@ const addUser = async () => {
                     </div>
                 </div>
                 <div className="p-4 bg-gray-50 dark:bg-gray-700 border-t dark:border-gray-600 flex justify-end shrink-0">
-                    <button type="button" onClick={() => handleUpdateUser(editingUser)} className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold shadow-md hover:bg-blue-700 active:scale-95 transition-transform">Save Changes</button>
+                    <button type="button" onClick={() => handleUpdateUser(editingUser)} className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold shadow-md hover:bg-blue-700 active:scale-95 transition-transform">{t('item_modal.save_changes')}</button>
                 </div>
             </div>
         </div>
@@ -609,20 +693,20 @@ const addUser = async () => {
 
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
             <div className="p-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/50 flex justify-between items-center">
-                <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">My Profile</h3>
+                <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">{t('settings.my_profile')}</h3>
                 <div className="flex gap-2">
                     <button 
                         onClick={() => openChangePassword(currentUser)}
                         className="text-blue-600 dark:text-blue-400 text-xs font-bold hover:bg-blue-50 dark:hover:bg-blue-900/30 px-2 py-1 rounded flex items-center gap-1"
                     >
-                        <Key size={12} /> Change Password
+                        <Key size={12} /> {t('settings.change_password')}
                     </button>
                     <button 
                     type="button"
                     onClick={() => openEditUser(currentUser)}
                     className="text-blue-600 dark:text-blue-400 text-xs font-bold hover:bg-blue-50 dark:hover:bg-blue-900/30 px-2 py-1 rounded flex items-center gap-1"
                     >
-                        <Edit2 size={12} /> Edit
+                        <Edit2 size={12} /> {t('settings.edit')}
                     </button>
                 </div>
             </div>
@@ -633,7 +717,7 @@ const addUser = async () => {
                  <div>
                      <h2 className="text-xl font-bold text-gray-800 dark:text-white">{currentUser.username}</h2>
                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-xs text-gray-500 dark:text-gray-400">Badge Color:</span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400">{t('settings.badge_color')}</span>
                         <div className="w-4 h-4 rounded-full" style={{ backgroundColor: getColor(currentUser.colorIndex) }} />
                      </div>
                  </div>
@@ -645,28 +729,28 @@ const addUser = async () => {
                         onClick={() => updatePreference('showWeather', !currentUser.preferences?.showWeather)}
                         className={`flex items-center justify-between p-2 rounded border text-xs font-bold ${currentUser.preferences?.showWeather !== false ? 'border-blue-200 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-400' : 'border-gray-200 bg-white text-gray-400 dark:bg-gray-700 dark:border-gray-600'}`}
                     >
-                        <span>Weather</span>
+                        <span>{t('settings.weather')}</span>
                         {currentUser.preferences?.showWeather !== false ? <Check size={14}/> : <X size={14}/>}
                     </button>
                     <button 
                         onClick={() => updatePreference('showMoonPhases', !currentUser.preferences?.showMoonPhases)}
                         className={`flex items-center justify-between p-2 rounded border text-xs font-bold ${currentUser.preferences?.showMoonPhases !== false ? 'border-purple-200 bg-purple-50 text-purple-700 dark:bg-purple-900/20 dark:border-purple-800 dark:text-purple-400' : 'border-gray-200 bg-white text-gray-400 dark:bg-gray-700 dark:border-gray-600'}`}
                     >
-                        <span>Moon Phases</span>
+                        <span>{t('settings.moon_phases')}</span>
                         {currentUser.preferences?.showMoonPhases !== false ? <Check size={14}/> : <X size={14}/>}
                     </button>
                     <button 
                         onClick={() => updatePreference('showHolidays', !currentUser.preferences?.showHolidays)}
                         className={`flex items-center justify-between p-2 rounded border text-xs font-bold ${currentUser.preferences?.showHolidays !== false ? 'border-green-200 bg-green-50 text-green-700 dark:bg-green-900/20 dark:border-green-800 dark:text-green-400' : 'border-gray-200 bg-white text-gray-400 dark:bg-gray-700 dark:border-gray-600'}`}
                     >
-                        <span>Holidays</span>
+                        <span>{t('settings.holidays')}</span>
                         {currentUser.preferences?.showHolidays !== false ? <Check size={14}/> : <X size={14}/>}
                     </button>
                     <button 
                         onClick={toggleTheme}
                         className={`flex items-center justify-between p-2 rounded border text-xs font-bold ${currentUser.preferences?.theme === 'DARK' ? 'border-purple-200 bg-purple-50 text-purple-700 dark:bg-purple-900/20 dark:border-purple-800 dark:text-purple-400' : 'border-gray-200 bg-white text-gray-400 dark:bg-gray-700 dark:border-gray-600'}`}
                     >
-                        <span>Dark Mode</span>
+                        <span>{t('settings.dark_mode')}</span>
                         {currentUser.preferences?.theme === 'DARK' ? <Check size={14}/> : <X size={14}/>}
                     </button>
                 </div>
@@ -674,7 +758,7 @@ const addUser = async () => {
                 <div>
                     <div className="flex items-center gap-2 mb-2">
                         <Type size={16} className="text-gray-400"/>
-                        <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">App Zoom Level</span>
+                        <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">{t('settings.zoom_level')}</span>
                     </div>
                     <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-1 gap-1">
                         {[0.85, 1, 1.10, 1.25].map(scale => {
@@ -686,7 +770,7 @@ const addUser = async () => {
                                     onClick={() => updateFontSize(scale)}
                                     className={`flex-1 py-2 rounded-md text-xs font-bold transition-all ${isSelected ? 'bg-white dark:bg-gray-600 shadow text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'}`}
                                 >
-                                    {scale === 1 ? 'Normal' : `${Math.round(scale * 100)}%`}
+                                    {scale === 1 ? t('settings.normal') : `${Math.round(scale * 100)}%`}
                                 </button>
                             )
                         })}
@@ -699,24 +783,39 @@ const addUser = async () => {
              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
                 <div className="p-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/50 flex items-center gap-2">
                     <UserPlus size={16} className="text-gray-500 dark:text-gray-400"/>
-                    <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">Family Members</h3>
+                    <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">{t('settings.family_members')}</h3>
                 </div>
                 <div className="p-4 space-y-4">
                     <div className="flex flex-col gap-2 mb-2 relative bg-gray-50 dark:bg-gray-700/30 p-2 rounded-lg border border-gray-100 dark:border-gray-700">
-                        <label htmlFor="newUserName" className="text-[0.6rem] font-bold text-gray-400 uppercase">Add New Member</label>
-                        <div className="flex gap-2">
-                            <input type="text" id="newUserName" name="newUserName" placeholder="Name or Email" value={newUserName} onChange={e => setNewUserName(e.target.value)} className={`flex-1 text-sm border rounded px-2 py-1 outline-none focus:border-blue-500 bg-white dark:bg-gray-700 dark:text-white dark:border-gray-600 ${validationError?.id === 'new-user' ? 'border-red-500 animate-shake' : ''}`}/>
+                        <label htmlFor="newUserName" className="text-[0.6rem] font-bold text-gray-400 uppercase">{t('settings.add_member')}</label>
+                        <div className="flex gap-2 mb-4">
+                            <div className="relative flex-1">
+                                <input type="text" id="newUserName" name="newUserName" placeholder={t('auth.name_or_email')} value={newUserName} onChange={e => setNewUserName(e.target.value)} className={`w-full text-sm border rounded px-2 py-1 outline-none focus:border-blue-500 bg-white dark:bg-gray-700 dark:text-white dark:border-gray-600 ${validationError?.id === 'new-user-name' ? 'border-red-500 animate-shake' : ''}`}/>
+                                {validationError?.id === 'new-user-name' && (
+                                    <div className="absolute top-full left-0 mt-1 text-[0.6rem] text-red-500 font-bold flex items-center gap-1 animate-in slide-in-from-top-1">
+                                        <AlertTriangle size={8} /> {validationError.msg}
+                                    </div>
+                                )}
+                            </div>
                             <div className="relative w-1/3">
                                 <Lock size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400"/>
-                                <input type="password" name="newUserPass" placeholder="Password" value={newUserPass} onChange={e => setNewUserPass(e.target.value)} className="w-full text-sm border rounded pl-6 pr-2 py-1 outline-none focus:border-blue-500 bg-white dark:bg-gray-700 dark:text-white dark:border-gray-600"/>
+                                <input 
+                                    type="password" 
+                                    name="newUserPass" 
+                                    placeholder={t('auth.password')} 
+                                    value={newUserPass} 
+                                    onChange={e => setNewUserPass(e.target.value)} 
+                                    onKeyDown={e => e.key === 'Enter' && addUser()}
+                                    className={`w-full text-sm border rounded pl-6 pr-2 py-1 outline-none focus:border-blue-500 bg-white dark:bg-gray-700 dark:text-white dark:border-gray-600 ${validationError?.id === 'new-user-pass' ? 'border-red-500 animate-shake' : ''}`}
+                                />
+                                {validationError?.id === 'new-user-pass' && (
+                                    <div className="absolute top-full left-0 mt-1 text-[0.6rem] text-red-500 font-bold flex items-center gap-1 whitespace-nowrap animate-in slide-in-from-top-1">
+                                        <AlertTriangle size={8} /> {validationError.msg}
+                                    </div>
+                                )}
                             </div>
-                            <button onClick={addUser} disabled={!newUserName || !newUserPass} className="bg-blue-600 text-white p-1.5 rounded hover:bg-blue-700 disabled:opacity-50 shadow-sm"><Plus size={16}/></button>
+                            <button onClick={addUser} disabled={!newUserName || !newUserPass} className="bg-blue-600 text-white p-1.5 rounded hover:bg-blue-700 disabled:opacity-50 shadow-sm h-fit"><Plus size={16}/></button>
                         </div>
-                         {validationError?.id === 'new-user' && (
-                            <div className="text-[0.6rem] text-red-500 font-bold flex items-center gap-1 mt-1">
-                                <AlertTriangle size={8} /> {validationError.msg}
-                            </div>
-                        )}
                     </div>
                     <div className="space-y-2">
                         {users.map(u => (
@@ -727,7 +826,7 @@ const addUser = async () => {
                                     </div>
                                     <div>
                                         <div className="text-sm font-bold text-gray-800 dark:text-gray-200">{u.username}</div>
-                                        {u.isAdmin && <div className="text-[0.6rem] text-blue-500 font-bold uppercase">Admin</div>}
+                                        {u.isAdmin && <div className="text-[0.6rem] text-blue-500 font-bold uppercase">{t('app.admin')}</div>}
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-2">
@@ -757,19 +856,19 @@ const addUser = async () => {
              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
                 <div className="p-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/50 flex items-center gap-2">
                     <Store size={16} className="text-gray-500 dark:text-gray-400"/>
-                    <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">Shopping List Config</h3>
+                    <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">{t('settings.shopping_config')}</h3>
                 </div>
                 <div className="p-4 space-y-6">
                     <div>
                         <div className="flex items-center justify-between mb-2">
-                            <label htmlFor="newStoreName" className="text-xs font-bold text-gray-400 uppercase tracking-wide">Stores</label>
+                            <label htmlFor="newStoreName" className="text-xs font-bold text-gray-400 uppercase tracking-wide">{t('settings.stores')}</label>
                         </div>
                         <div className="flex gap-2 mb-2 relative">
                             <input 
                                 type="text" 
 								id="newStoreName"
 								name="newStoreName"
-                                placeholder="New Store Name" 
+                                placeholder={t('settings.new_store')}
                                 value={newStoreName} 
                                 onChange={e => setNewStoreName(e.target.value)} 
                                 onKeyDown={e => e.key === 'Enter' && addStore()} 
@@ -830,13 +929,27 @@ const addUser = async () => {
                     </div>
                     
                     <div>
-                        <label htmlFor="newCatName" className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2 block">Categories</label>
-                        <div className="flex gap-2 mb-2">
-                             <input type="text" id="newCatName" name="newCatName" placeholder="Category Name" value={newCatName} onChange={e => setNewCatName(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategory()} className="flex-1 text-sm border dark:border-gray-600 rounded px-2 py-1 outline-none focus:border-blue-500 bg-white dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"/>
+                        <label htmlFor="newCatName" className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2 block">{t('settings.categories')}</label>
+                        <div className="flex gap-2 mb-2 relative">
+                             <input 
+                                type="text" 
+                                id="newCatName" 
+                                name="newCatName" 
+                                placeholder={t('settings.category_name')} 
+                                value={newCatName} 
+                                onChange={e => setNewCatName(e.target.value)} 
+                                onKeyDown={e => e.key === 'Enter' && addCategory()} 
+                                className={`flex-1 text-sm border dark:border-gray-600 rounded px-2 py-1 outline-none focus:border-blue-500 bg-white dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 ${validationError?.id === 'new-cat' ? 'border-red-500 animate-shake' : ''}`}
+                             />
                              <select name="newCatStoreSelect" value={newCatStoreId} onChange={e => setNewCatStoreId(e.target.value)} className="text-sm border dark:border-gray-600 rounded px-2 py-1 outline-none max-w-[120px] bg-white dark:bg-gray-700 dark:text-white">
                                  {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                              </select>
                              <button onClick={addCategory} disabled={!newCatName} className="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 p-1.5 rounded hover:bg-blue-100 dark:hover:bg-blue-900 disabled:opacity-50"><Plus size={16}/></button>
+                             {validationError?.id === 'new-cat' && (
+                                <div className="absolute top-full left-0 mt-1 text-[0.6rem] text-red-500 font-bold flex items-center gap-1 bg-red-50 px-2 py-0.5 rounded shadow-sm z-10">
+                                    <AlertTriangle size={8} /> {validationError.msg}
+                                </div>
+                            )}
                         </div>
                         <div className="space-y-1">
                             {categories.sort((a,b) => a.order - b.order).map((c, idx) => {
@@ -878,7 +991,7 @@ const addUser = async () => {
                                             <>
                                                 <div className="flex flex-col flex-1 leading-none min-w-0">
                                                     <span className="font-bold text-gray-700 dark:text-gray-200 truncate">{c.name}</span>
-                                                    <span className="text-[0.6rem] text-gray-400 truncate">{stores.find(s => s.id === c.storeId)?.name || 'Unknown Store'}</span>
+                                                    <span className="text-[0.6rem] text-gray-400 truncate">{stores.find(s => s.id === c.storeId)?.name || t('settings.unknown_store')}</span>
                                                 </div>
                                                 <button onClick={() => { setEditingCatId(c.id); setEditCatName(c.name); setEditCatStoreId(c.storeId || ''); }} className="text-gray-400 hover:text-blue-500 dark:hover:text-blue-400"><Edit2 size={12}/></button>
                                                 <button onClick={() => deleteCategory(c.id)} className="text-gray-400 hover:text-red-500 ml-2"><Trash2 size={14}/></button>
@@ -897,11 +1010,36 @@ const addUser = async () => {
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
                  <div className="p-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/50 flex items-center gap-2">
                     <Calendar size={16} className="text-gray-500 dark:text-gray-400"/>
-                    <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">Calendar Config</h3>
+                    <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">{t('settings.calendar_config')}</h3>
                 </div>
                 <div className="p-4 space-y-4">
+                    {/* Import / Export Section */}
+                    <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg border border-blue-100 dark:border-blue-800">
+                        <label className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase mb-3 block">Import / Export</label>
+                        <div className="flex gap-3">
+                            <button onClick={handleExportIcal} className="flex-1 flex items-center justify-center gap-2 bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-700 rounded-lg py-2 text-xs font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/50 shadow-sm transition-all active:scale-95">
+                                <FileDown size={16} /> Export .ics
+                            </button>
+                            <button onClick={() => icalInputRef.current?.click()} className="flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white border border-transparent rounded-lg py-2 text-xs font-bold hover:bg-blue-700 shadow-sm transition-all active:scale-95">
+                                <FileUp size={16} /> Import .ics
+                            </button>
+                            <input type="file" ref={icalInputRef} onChange={handleImportIcal} accept=".ics" className="hidden" />
+                        </div>
+                        
+                        {importStatus ? (
+                            <div className={`mt-3 text-xs font-bold flex items-center justify-center gap-2 px-2 py-1.5 rounded ${importStatus.type === 'success' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
+                                {importStatus.type === 'success' ? <CheckCircle size={14}/> : <AlertTriangle size={14}/>}
+                                {importStatus.msg}
+                            </div>
+                        ) : (
+                            <p className="text-[0.6rem] text-blue-600/70 dark:text-blue-400/70 mt-2 text-center">
+                                Imports will be converted to your local time and assigned to you.
+                            </p>
+                        )}
+                    </div>
+
                     <div className="bg-gray-50 dark:bg-gray-700/50 p-3 rounded-lg border border-gray-100 dark:border-gray-700">
-                        <label htmlFor="holidayCountry" className="text-xs font-bold text-gray-400 uppercase mb-3 block">Public Holiday Region</label>
+                        <label htmlFor="holidayCountry" className="text-xs font-bold text-gray-400 uppercase mb-3 block">{t('settings.region')}</label>
                         <div className="space-y-3">
                             <select 
 								id="holidayCountry"
@@ -911,12 +1049,15 @@ const addUser = async () => {
                                 onChange={(e) => onUpdateSettings({...settings, holidayCountryCode: e.target.value, holidaySubdivisionCode: ''})}
                             >
                                 {countries.map(c => (
-                                    <option key={c.key} value={c.key}>{c.value}</option>
+                                    <option key={c.key} value={c.key}>
+                                        {/* Try to translate country name, fallback to API English name */}
+                                        {new Intl.DisplayNames([currentUser.preferences?.language || 'en'], { type: 'region' }).of(c.key) || c.value}
+                                    </option>
                                 ))}
                             </select>
                             
                             {loadingSubdivisions ? (
-                                <div className="text-xs text-gray-400 italic">Loading regions...</div>
+                                <div className="text-xs text-gray-400 italic">{t('messages.loading_regions')}</div>
                             ) : (subdivisions.length > 0 && (
                                 <select
 									name="holidaySubdivision"
@@ -924,7 +1065,7 @@ const addUser = async () => {
                                     value={settings.holidaySubdivisionCode || ''}
                                     onChange={(e) => onUpdateSettings({...settings, holidaySubdivisionCode: e.target.value})}
                                 >
-                                    <option value="">National Holidays Only</option>
+                                    <option value="">{t('settings.national_only')}</option>
                                     {subdivisions.map(s => (
                                         <option key={s} value={s}>{s}</option>
                                     ))}
@@ -937,10 +1078,10 @@ const addUser = async () => {
                         <div className="flex items-center justify-between mb-3">
                              <div className="flex items-center gap-2">
                                 <CloudSun size={16} className="text-blue-500"/>
-                                <label htmlFor="citySearch" className="text-xs font-bold text-gray-400 uppercase">Weather Location</label>
+                                <label htmlFor="citySearch" className="text-xs font-bold text-gray-400 uppercase">{t('settings.weather_location')}</label>
                              </div>
                              {settings.weatherEnabled && (
-                                 <span className="text-[0.625rem] text-green-600 dark:text-green-400 font-bold bg-green-50 dark:bg-green-900/30 px-2 py-0.5 rounded-full">Active</span>
+                                 <span className="text-[0.625rem] text-green-600 dark:text-green-400 font-bold bg-green-50 dark:bg-green-900/30 px-2 py-0.5 rounded-full">{t('settings.active')}</span>
                              )}
                         </div>
                         
@@ -957,7 +1098,7 @@ const addUser = async () => {
 									id="citySearch"
 									name="citySearch"
                                     type="text" 
-                                    placeholder="City, State (e.g. Springfield, OH)" 
+                                    placeholder={t('settings.city_placeholder')}
                                     className="text-xs p-2 rounded border dark:border-gray-600 flex-1 outline-none focus:ring-1 focus:ring-blue-500 bg-white dark:bg-gray-700 dark:text-white"
                                     value={cityQuery}
                                     onChange={(e) => setCityQuery(e.target.value)}
@@ -993,9 +1134,17 @@ const addUser = async () => {
 
         {currentUser.isAdmin && (
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-                <div className="p-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/50 flex items-center gap-2">
-                    <Palette size={16} className="text-gray-500 dark:text-gray-400"/>
-                    <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">System Theme</h3>
+                <div className="p-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/50 flex items-center gap-2 justify-between">
+                    <div className="flex items-center gap-2">
+                        <Palette size={16} className="text-gray-500 dark:text-gray-400"/>
+                        <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">{t('settings.family_color_palette')}</h3>
+                    </div>
+                    <div className="group relative">
+                        <HelpCircle size={16} className="text-gray-400 cursor-help" />
+                        <div className="absolute right-0 top-full mt-2 w-64 p-3 bg-gray-800 text-white text-xs rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
+                            {t('settings.family_color_desc')}
+                        </div>
+                    </div>
                 </div>
                 <div className="p-4 space-y-4">
                     <div className="grid grid-cols-2 gap-2">
@@ -1005,7 +1154,7 @@ const addUser = async () => {
                             const previewColors = PALETTES[pKey].slice(0, 5);
                             return (
                                 <button key={key} type="button" onClick={() => onUpdatePaletteKey(pKey)} className={`p-3 rounded-lg border-2 text-left transition-all ${isActive ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 ring-1 ring-blue-200 dark:ring-blue-800' : 'border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-500'}`}>
-                                    <div className="text-xs font-bold text-gray-700 dark:text-gray-300 mb-2 capitalize">{key.toLowerCase()}</div>
+                                    <div className="text-xs font-bold text-gray-700 dark:text-gray-300 mb-2 capitalize">{t(`settings.palette_${key.toLowerCase()}`)}</div>
                                     <div className="flex gap-1">{previewColors.map(c => <div key={c} className="w-3 h-3 rounded-full" style={{background: c}} />)}</div>
                                 </button>
                             )
@@ -1019,21 +1168,21 @@ const addUser = async () => {
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
                 <div className="p-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/50 flex items-center gap-2">
                     <Database size={16} className="text-gray-500 dark:text-gray-400"/>
-                    <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">Data Management</h3>
+                    <h3 className="font-bold text-gray-700 dark:text-gray-300 text-sm uppercase tracking-wide">{t('settings.data_management')}</h3>
                 </div>
                 <div className="p-4 space-y-6">
                     <div className="grid grid-cols-2 gap-4">
                         <div className="flex flex-col gap-2">
                             <button type="button" onClick={handleDownloadBackup} className="flex flex-col items-center gap-2 p-4 rounded-xl bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 border border-blue-100 dark:border-blue-800 transition-colors">
                                 <Download size={24} />
-                                <span className="text-xs font-bold uppercase">Backup Data</span>
+                                <span className="text-xs font-bold uppercase">{t('settings.backup')}</span>
                             </button>
                         </div>
                         
                         <div className="flex flex-col gap-2">
                             <button type="button" onClick={handleRestoreClick} className="flex flex-col items-center gap-2 p-4 rounded-xl bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 transition-colors">
                                 <Upload size={24} />
-                                <span className="text-xs font-bold uppercase">Restore File</span>
+                                <span className="text-xs font-bold uppercase">{t('settings.restore')}</span>
                             </button>
                             <input type="file" name="restoreFile" ref={fileInputRef} className="hidden" accept=".json" onChange={handleFileChange}/>
                         </div>
@@ -1047,25 +1196,23 @@ const addUser = async () => {
                     )}
 
                     <div className="border-t dark:border-gray-700 pt-4">
-                        <label htmlFor="pruneDate" className="block text-xs font-bold text-red-500 uppercase tracking-wide mb-2">Bulk Delete Events</label>
+                        <label htmlFor="pruneDate" className="block text-xs font-bold text-red-500 uppercase tracking-wide mb-2">{t('settings.bulk_delete')}</label>
                         <div className="flex gap-2">
                             <div className="relative group flex-1">
-                                <div className="border dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 dark:text-white flex items-center h-10 border-transparent group-hover:border-blue-300 dark:group-hover:border-blue-700 transition-colors">
-                                    <span className={`truncate ${pruneDate ? 'text-gray-800 dark:text-white' : 'text-gray-400 italic'}`}>
-                                        {pruneDate ? new Date(pruneDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Select Threshold Date'}
-                                    </span>
-                                </div>
-                                <input 
-                                    type="date" 
-									id="pruneDate"
-									name="pruneDate"
-                                    value={pruneDate} 
-                                    onChange={(e) => setPruneDate(e.target.value)} 
-                                    onClick={(e) => e.currentTarget.showPicker()}
-                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                <DatePicker 
+                                    selected={pruneDate ? new Date(pruneDate) : null}
+                                    onChange={(date: Date) => setPruneDate(date ? date.toISOString() : '')}
+                                    placeholderText={t('settings.select_threshold')}
+                                    dateFormat={t('formats.date_picker')}
+                                    className="w-full border dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 dark:text-white flex items-center h-10 border-transparent focus:border-blue-300 dark:focus:border-blue-700 outline-none cursor-pointer"
+                                    portalId="root"
+                                    locale={currentUser.preferences?.language?.split('-')[0] || 'en'}
+                                    showMonthDropdown
+                                    showYearDropdown
+                                    dropdownMode="select"
                                 />
                             </div>
-                            <button type="button" onClick={handleClickPrune} disabled={!pruneDate} className="bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 px-4 py-2 rounded-lg font-bold text-xs hover:bg-red-200 dark:hover:bg-red-900/50 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-transform">Prune</button>
+                            <button type="button" onClick={handleClickPrune} disabled={!pruneDate} className="bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 px-4 py-2 rounded-lg font-bold text-xs hover:bg-red-200 dark:hover:bg-red-900/50 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-transform">{t('settings.prune')}</button>
                         </div>
                         {pruneStatus && (
                             <div className={`mt-2 text-xs font-bold flex items-center gap-2 px-2 ${pruneStatus.type === 'success' ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'}`}>

@@ -1,10 +1,14 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { CalendarEvent, User, SystemSettings } from '../types';
-import { DAYS_OF_WEEK, toLocalDateString } from '../constants';
+import { toLocalDateString } from '../constants';
 import { ChevronLeft, ChevronRight, Search, X, Filter, Trash2, CheckSquare, Square, Repeat, ChevronDown, CalendarDays, Users, Check, Plus } from 'lucide-react';
-import { getMoonPhase, getWeatherIcon, getWeatherDescription, WeatherData } from '../services/integrations';
+import { getMoonPhase, getWeatherIcon, getWeatherDescriptionKey, WeatherData } from '../services/integrations';
+import { expandRRule } from '../services/recurrence';
 import { useUser } from '../contexts/UserContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { useTranslation } from 'react-i18next';
+import DatePicker from 'react-datepicker';
 
 interface AgendaGroup {
     label: string;
@@ -30,6 +34,7 @@ const Calendar: React.FC<CalendarProps> = ({
     onEventClick, onDateClick, onUpdateEvents, settings, weatherData, holidayEvents, isSidebar 
 }) => {
   const { users, currentUser } = useUser();
+  const { t, i18n } = useTranslation();
   const { activePalette, getUserColor } = useTheme();
 
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -38,6 +43,27 @@ const Calendar: React.FC<CalendarProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastWheelTime = useRef(0);
+  const clickStartPos = useRef<{x: number, y: number} | null>(null);
+
+  const handleCellMouseDown = (e: React.MouseEvent) => {
+      clickStartPos.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleCellClick = (e: React.MouseEvent, date: Date) => {
+      // 1. Check if we are suppressing clicks due to an aborted drag/shake on an event
+      if (ignoreClickRef.current) {
+          ignoreClickRef.current = false;
+          return;
+      }
+
+      // 2. Check for physical movement (standard drag detection)
+      if (clickStartPos.current) {
+          const dx = e.clientX - clickStartPos.current.x;
+          const dy = e.clientY - clickStartPos.current.y;
+          if (Math.sqrt(dx*dx + dy*dy) > 10) return; // Ignore drags
+      }
+      onDateClick(date);
+  };
   
   // Date Picker State
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
@@ -53,10 +79,16 @@ const Calendar: React.FC<CalendarProps> = ({
   const [hideHolidays, setHideHolidays] = useState(false);
   const [selectedEventIds, setSelectedEventIds] = useState<Set<string>>(new Set());
   const [showManageUsersModal, setShowManageUsersModal] = useState(false);
+  const [dragOverDate, setDragOverDate] = useState<string | null>(null);
+
+  // Feedback State for "Stuck" Drags
+  const [shakeId, setShakeId] = useState<string | null>(null);
+  const [tooltipState, setTooltipState] = useState<{ id: string, x: number, y: number } | null>(null);
+  const ignoreClickRef = useRef(false);
 
   // Detect Mobile View based on standard breakpoint logic
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-
+  
   const effectiveViewMode = isSidebar ? 'AGENDA' : viewMode;
 
   useEffect(() => {
@@ -144,58 +176,21 @@ const Calendar: React.FC<CalendarProps> = ({
     return prevYear >= MIN_YEAR;
   };
 
-  const expandEvents = (startRange: Date, endRange: Date, rawEvents: CalendarEvent[], strictSingleBounds = true) => {
-      const expanded: CalendarEvent[] = [];
+  const expandEvents = (startRange: Date, endRange: Date, rawEvents: CalendarEvent[]) => {
+      let expanded: CalendarEvent[] = [];
       
       rawEvents.forEach(e => {
-          if (!e.recurrence) {
+          if (e.rrule) {
+              // Recurring: Use RRule Engine
+              const instances = expandRRule(e, startRange, endRange);
+              expanded = expanded.concat(instances);
+          } else {
+              // Single Event: Simple Check
               const start = new Date(e.startTime);
-              // If strict (Day View), we enforce endRange.
-              // If NOT strict (Agenda), we allow single events to go forever (catch typos).
-              const inRange = strictSingleBounds 
-                  ? (start >= startRange && start <= endRange)
-                  : (start >= startRange);
-                  
-              if (inRange) {
+              // Check overlap
+              if (start >= startRange && start <= endRange) {
                   expanded.push(e);
               }
-              return;
-          }
-
-          const eStart = new Date(e.startTime);
-          let until: Date;
-          if (e.recurrence.until) {
-              until = new Date(e.recurrence.until);
-              until.setHours(23, 59, 59, 999);
-          } else {
-              until = endRange;
-          }
-
-          const freq = e.recurrence.freq;
-          const exdates = new Set(e.exdates || []);
-          
-          let current = new Date(eStart);
-          const effectiveEnd = until < endRange ? until : endRange;
-
-          while (current <= effectiveEnd) {
-              const currentIsoDate = toLocalDateString(current);
-              
-              if (current >= startRange) {
-                  if (!exdates.has(currentIsoDate)) {
-                      expanded.push({
-                          ...e,
-                          id: `${e.id}_${current.getTime()}`,
-                          startTime: current.toISOString(),
-                          endTime: e.endTime ? new Date(current.getTime() + (new Date(e.endTime).getTime() - eStart.getTime())).toISOString() : undefined,
-                          recurrence: undefined 
-                      });
-                  }
-              }
-
-              if (freq === 'DAILY') current.setDate(current.getDate() + 1);
-              if (freq === 'WEEKLY') current.setDate(current.getDate() + 7);
-              if (freq === 'MONTHLY') current.setMonth(current.getMonth() + 1);
-              if (freq === 'YEARLY') current.setFullYear(current.getFullYear() + 1);
           }
       });
       return expanded;
@@ -246,8 +241,8 @@ const Calendar: React.FC<CalendarProps> = ({
     const now = new Date();
     const startRange = hidePastEvents ? new Date(now.setHours(0,0,0,0)) : new Date(new Date().setFullYear(now.getFullYear() - 1));
     const endRange = new Date(new Date().setFullYear(now.getFullYear() + 2));
-    // AGENDA CALL: Pass 'false' to disable strict bounds for single events
-    let expanded = expandEvents(startRange, endRange, allEventsCombined, false);
+    
+    let expanded = expandEvents(startRange, endRange, allEventsCombined);
     
     expanded = expanded.filter(e => {
         if (searchQuery.trim()) {
@@ -279,7 +274,7 @@ const Calendar: React.FC<CalendarProps> = ({
     const grouped: Record<string, AgendaGroup> = {};
     expanded.forEach(e => {
         const d = new Date(e.startTime);
-        const label = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+        const label = d.toLocaleDateString(i18n.language, { month: 'long', year: 'numeric' });
         const key = `${d.getFullYear()}-${d.getMonth()}`; 
         
         if (!grouped[key]) {
@@ -299,6 +294,7 @@ const Calendar: React.FC<CalendarProps> = ({
     const startOfDay = new Date(date); startOfDay.setHours(0,0,0,0);
     const endOfDay = new Date(date); endOfDay.setHours(23,59,59,999);
     
+    // Slight buffer for RRule inclusive calculation quirks
     const dayEvents = expandEvents(startOfDay, endOfDay, allEventsCombined);
     
     return dayEvents.sort((a, b) => {
@@ -440,7 +436,8 @@ const Calendar: React.FC<CalendarProps> = ({
 
   const formatTime = (isoString: string) => {
       const date = new Date(isoString);
-      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(' ', '').toLowerCase();
+      // Respect system preference completely (e.g. 17:00 vs 5:00 PM)
+      return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   };
 
   const rafRef = useRef<number | null>(null);
@@ -485,7 +482,7 @@ const Calendar: React.FC<CalendarProps> = ({
       if (currentUser.preferences?.showMoonPhases !== false) {
           const mp = getMoonPhase(date);
           if (mp) {
-              extras.push(<span key="moon" title={mp.label} className="text-2xl leading-none select-none">{mp.icon}</span>);
+              extras.push(<span key="moon" title={t(mp.label)} className="text-2xl leading-none select-none">{mp.icon}</span>);
           }
       }
 
@@ -496,7 +493,7 @@ const Calendar: React.FC<CalendarProps> = ({
               const high = Math.round(w.maxTemp);
               const low = Math.round(w.minTemp);
               extras.push(
-                  <div key="weather" className="flex items-center gap-1 text-gray-600 dark:text-gray-300 bg-white/50 dark:bg-gray-700/50 rounded pr-1" title={`${getWeatherDescription(w.weatherCode)} (High: ${high}°, Low: ${low}°)`}>
+                  <div key="weather" className="flex items-center gap-1 text-gray-600 dark:text-gray-300 bg-white/50 dark:bg-gray-700/50 rounded pr-1" title={`${t(getWeatherDescriptionKey(w.weatherCode))} (High: ${high}°, Low: ${low}°)`}>
                       <span className="text-xl leading-none select-none">{getWeatherIcon(w.weatherCode)}</span>
                       <span className="text-xs font-bold leading-none -space-y-0.5 opacity-80 flex flex-col items-end">
                         <span className="text-gray-800 dark:text-gray-200">H:{high}°</span>
@@ -520,6 +517,88 @@ const Calendar: React.FC<CalendarProps> = ({
       if (next.has(realId)) next.delete(realId);
       else next.add(realId);
       setSelectedEventIds(next);
+  };
+
+  const handleDragStart = (e: React.DragEvent, event: CalendarEvent) => {
+      if (isSidebar || effectiveViewMode !== 'WEEK') return;
+
+      // RECURRENCE GUARD:
+      // If recurring, block the drag immediately, trigger shake, and show popup
+      if (event.rrule || event.id.includes('_')) {
+          e.preventDefault(); // Stop the ghost image from forming
+          
+          // 1. Trigger Visuals
+          setShakeId(event.id);
+          const rect = e.currentTarget.getBoundingClientRect();
+          setTooltipState({
+              id: event.id,
+              x: rect.left + rect.width / 2,
+              y: rect.bottom + 10 // Position below event
+          });
+
+          // 2. Block the subsequent Click event
+          ignoreClickRef.current = true;
+          
+          // 3. Cleanup
+          setTimeout(() => setShakeId(null), 400); 
+          setTimeout(() => setTooltipState(null), 2500); 
+          
+          return;
+      }
+
+      e.dataTransfer.setData('application/json', JSON.stringify(event));
+      e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, date: Date) => {
+      if (isSidebar || effectiveViewMode !== 'WEEK') return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const dateStr = toLocalDateString(date);
+      if (dragOverDate !== dateStr) setDragOverDate(dateStr);
+  };
+
+  const handleDrop = (e: React.DragEvent, targetDate: Date) => {
+      e.preventDefault();
+      setDragOverDate(null);
+      if (isSidebar || effectiveViewMode !== 'WEEK') return;
+
+      try {
+          const data = e.dataTransfer.getData('application/json');
+          const originalEvent: CalendarEvent = JSON.parse(data);
+          
+          // We only support moving the entire event instance for now
+          // If it's recurring, this might detach it or move the base.
+          // For simplicity in this "drag" interaction, we update the Start Time Day.
+
+          const oldStart = new Date(originalEvent.startTime);
+          const newStart = new Date(targetDate);
+          
+          // Preserve original TIME
+          newStart.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
+          
+          const diff = newStart.getTime() - oldStart.getTime();
+          
+          const updatedEvent = {
+              ...originalEvent,
+              startTime: newStart.toISOString(),
+              endTime: originalEvent.endTime 
+                ? new Date(new Date(originalEvent.endTime).getTime() + diff).toISOString() 
+                : undefined
+          };
+
+          // If the ID has an underscore, it's a virtual instance.
+          if (originalEvent.id.includes('_')) {
+              return;
+          }
+
+          // Update the list
+          const updatedList = events.map(ev => ev.id === updatedEvent.id ? updatedEvent : ev);
+          onUpdateEvents(updatedList);
+
+      } catch (err) {
+          console.error("Drop failed", err);
+      }
   };
 
   const handleBulkDeleteClick = (e: React.MouseEvent) => {
@@ -550,6 +629,18 @@ const Calendar: React.FC<CalendarProps> = ({
 
   return (
     <div className="flex flex-col flex-1 h-full bg-white dark:bg-gray-900 overflow-hidden relative" ref={containerRef} onWheel={handleWheel}>
+      <style>{`
+        @keyframes shake-horizontal {
+            0%, 100% { transform: translateX(0); }
+            20% { transform: translateX(-4px); }
+            40% { transform: translateX(4px); }
+            60% { transform: translateX(-4px); }
+            80% { transform: translateX(4px); }
+        }
+        .animate-shake-x {
+            animation: shake-horizontal 0.4s cubic-bezier(.36,.07,.19,.97) both;
+        }
+      `}</style>
       {!isSidebar && (
       <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shrink-0 z-20 gap-3">
         {effectiveViewMode === 'AGENDA' ? (
@@ -558,7 +649,7 @@ const Calendar: React.FC<CalendarProps> = ({
                 <button onClick={() => onViewModeChange('WEEK')} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full text-gray-500 dark:text-gray-400"><ChevronLeft size={24}/></button>
                 <div className="flex-1 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center px-3 py-2 gap-2">
                     <Search size={18} className="text-gray-400 dark:text-gray-500" />
-                    <input type="text" name="agendaSearch" placeholder="Search..." autoFocus value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="bg-transparent border-none outline-none text-sm w-full dark:text-white dark:placeholder-gray-500"/>
+                    <input type="text" name="agendaSearch" placeholder={t('calendar.search')} autoFocus value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="bg-transparent border-none outline-none text-sm w-full dark:text-white dark:placeholder-gray-500"/>
                     <div className="flex items-center gap-2">
                         {searchQuery && <button onClick={() => setSearchQuery('')}><X size={16} className="text-gray-400 dark:text-gray-500"/></button>}
                         <div className="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1"></div>
@@ -571,7 +662,7 @@ const Calendar: React.FC<CalendarProps> = ({
              
              {(showFilter || filterUserIds.length > 0) && (
                  <div className="flex gap-2 overflow-x-auto pb-2 px-1 no-scrollbar">
-                    <button onClick={() => setFilterUserIds([])} className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap border ${filterUserIds.length === 0 ? 'bg-gray-800 text-white border-gray-800 dark:bg-gray-200 dark:text-gray-900' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600'}`}>All</button>
+                    <button onClick={() => setFilterUserIds([])} className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap border ${filterUserIds.length === 0 ? 'bg-gray-800 text-white border-gray-800 dark:bg-gray-200 dark:text-gray-900' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600'}`}>{t('calendar.filter_all')}</button>
                     {users.map(u => {
                         const isActive = filterUserIds.includes(u.id);
                         return (
@@ -589,21 +680,21 @@ const Calendar: React.FC<CalendarProps> = ({
             <div className="flex items-center justify-between px-1 mt-1 flex-wrap gap-2">
                  <div className="flex items-center gap-3">
                     <label className="flex items-center gap-2 text-xs font-bold text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-200">
-                        <input type="checkbox" checked={hidePastEvents} onChange={(e) => setHidePastEvents(e.target.checked)} className="rounded text-blue-600 focus:ring-0 w-4 h-4 border-gray-300 dark:border-gray-600 dark:bg-gray-700" /> Hide Past
+                        <input type="checkbox" checked={hidePastEvents} onChange={(e) => setHidePastEvents(e.target.checked)} className="rounded text-blue-600 focus:ring-0 w-4 h-4 border-gray-300 dark:border-gray-600 dark:bg-gray-700" /> {t('calendar.hide_past')}
                     </label>
                     <label className="flex items-center gap-2 text-xs font-bold text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-200">
-                        <input type="checkbox" checked={hideHolidays} onChange={(e) => setHideHolidays(e.target.checked)} className="rounded text-blue-600 focus:ring-0 w-4 h-4 border-gray-300 dark:border-gray-600 dark:bg-gray-700" /> Hide Holidays
+                        <input type="checkbox" checked={hideHolidays} onChange={(e) => setHideHolidays(e.target.checked)} className="rounded text-blue-600 focus:ring-0 w-4 h-4 border-gray-300 dark:border-gray-600 dark:bg-gray-700" /> {t('calendar.hide_holidays')}
                     </label>
                  </div>
-                 <div className="text-[0.625rem] font-bold text-gray-400 dark:text-gray-500 uppercase">{Object.values(agendaData).reduce((acc, g) => acc + g.events.length, 0)} Events</div>
+                 <div className="text-[0.625rem] font-bold text-gray-400 dark:text-gray-500 uppercase">{Object.values(agendaData).reduce((acc, g) => acc + g.events.length, 0)} {t('calendar.events_count')}</div>
             </div>
             </div>
         ) : (
             <>
                 <div className="flex items-center justify-between w-full">
                     <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-0.5">
-                        <button onClick={() => onViewModeChange('WEEK')} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${effectiveViewMode === 'WEEK' ? 'bg-white dark:bg-gray-600 shadow text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}`}><span className="md:hidden">WEEK</span><span className="hidden md:inline">WEEKLY</span></button>
-                        <button onClick={() => onViewModeChange('MONTH')} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${effectiveViewMode === 'MONTH' ? 'bg-white dark:bg-gray-600 shadow text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}`}>MONTH</button>
+                        <button onClick={() => onViewModeChange('WEEK')} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${effectiveViewMode === 'WEEK' ? 'bg-white dark:bg-gray-600 shadow text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}`}><span className="md:hidden">WEEK</span><span className="hidden md:inline">{t('calendar.week')}</span></button>
+                        <button onClick={() => onViewModeChange('MONTH')} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${effectiveViewMode === 'MONTH' ? 'bg-white dark:bg-gray-600 shadow text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}`}>{t('calendar.month')}</button>
                     </div>
                     <div className="flex items-center gap-2">
                         <button
@@ -623,35 +714,19 @@ const Calendar: React.FC<CalendarProps> = ({
                     </div>
                 </div>
                 <div className="flex items-center justify-between w-full relative">
-                     <div className="relative flex items-center gap-1 group cursor-pointer" onClick={() => { setPickerYear(displayDate.getFullYear()); setIsDatePickerOpen(!isDatePickerOpen); }}>
-                        <h2 className="font-bold text-gray-800 dark:text-gray-100 text-lg select-none hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
-                            {displayDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-                        </h2>
-                        <ChevronDown size={16} className={`text-gray-400 dark:text-gray-500 transition-transform duration-200 ${isDatePickerOpen ? 'rotate-180 text-blue-500' : ''}`} />
-                        
-                        {isDatePickerOpen && (
-                            <div className="absolute top-full left-0 mt-2 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 p-4 z-50 w-72 animate-in zoom-in-95 origin-top-left" onClick={e => e.stopPropagation()}>
-                                <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-100 dark:border-gray-700">
-                                    <button onClick={(e) => { e.stopPropagation(); setPickerYear(pickerYear - 1); }} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-gray-600 dark:text-gray-300"><ChevronLeft size={20}/></button>
-                                    <span className="font-bold text-lg text-gray-800 dark:text-gray-100 tabular-nums">{pickerYear}</span>
-                                    <button onClick={(e) => { e.stopPropagation(); setPickerYear(pickerYear + 1); }} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-gray-600 dark:text-gray-300"><ChevronRight size={20}/></button>
-                                </div>
-                                <div className="grid grid-cols-3 gap-2">
-                                    {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((m, i) => (
-                                        <button 
-                                            key={m} 
-                                            onClick={(e) => { e.stopPropagation(); handleJumpToDate(i); }}
-                                            className={`py-2 rounded text-sm font-bold transition-colors ${displayDate.getMonth() === i && displayDate.getFullYear() === pickerYear ? 'bg-blue-600 text-white shadow-md' : 'hover:bg-blue-50 dark:hover:bg-blue-900/30 text-gray-700 dark:text-gray-300'}`}
-                                        >
-                                            {m}
-                                        </button>
-                                    ))}
-                                </div>
-                                <button onClick={(e) => { e.stopPropagation(); setCurrentDate(new Date()); setIsDatePickerOpen(false); }} className="w-full mt-3 py-2 text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 rounded hover:bg-blue-100 dark:hover:bg-blue-900/50 flex items-center justify-center gap-2">
-                                    <CalendarDays size={14} /> Go to Today
-                                </button>
-                            </div>
-                        )}
+                     <div className="relative flex items-center gap-1 group">
+                        <DatePicker
+                            selected={displayDate}
+                            onChange={(date: Date) => { setCurrentDate(date); }}
+                            dateFormat={t('formats.month_year')}
+                            showMonthYearPicker
+                            showYearDropdown
+                            dropdownMode="select"
+                            className="font-bold text-gray-800 dark:text-gray-100 text-lg select-none hover:text-blue-600 dark:hover:text-blue-400 transition-colors bg-transparent border-none outline-none cursor-pointer w-40"
+                            portalId="root"
+                            locale={currentUser.preferences?.language?.split('-')[0] || 'en'}
+                        />
+                        <ChevronDown size={16} className="text-gray-400 dark:text-gray-500 pointer-events-none absolute right-0" />
                      </div>
 
                      <div className="flex items-center gap-1">
@@ -671,14 +746,22 @@ const Calendar: React.FC<CalendarProps> = ({
                 onClick={() => onDateClick(new Date())}
                 className="w-full py-2 bg-blue-600 text-white rounded-lg text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-blue-700 active:scale-95 transition-all shadow-sm"
             >
-                <Plus size={16} /> New Event
+                <Plus size={16} /> {t('calendar.new_event')}
             </button>
         </div>
       )}
 
       {effectiveViewMode !== 'AGENDA' && (
           <div className="hidden md:grid grid-cols-7 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 z-10 shrink-0">
-            {DAYS_OF_WEEK.map(day => <div key={day} className="text-center py-2 text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">{day.slice(0, 3)}</div>)}
+            {Array.from({ length: 7 }).map((_, i) => {
+                const d = new Date();
+                d.setDate(d.getDate() - d.getDay() + i);
+                return (
+                    <div key={i} className="text-center py-2 text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                        {d.toLocaleDateString(i18n.language, { weekday: 'short' })}
+                    </div>
+                );
+            })}
           </div>
       )}
 
@@ -688,7 +771,7 @@ const Calendar: React.FC<CalendarProps> = ({
         {effectiveViewMode === 'AGENDA' && (
             <div className="pb-28"> 
                 {Object.keys(agendaData).length === 0 && (
-                    <div className="flex flex-col items-center justify-center pt-20 text-gray-400 dark:text-gray-600"><Filter size={48} className="mb-4 opacity-20" /><p>No events found.</p></div>
+                    <div className="flex flex-col items-center justify-center pt-20 text-gray-400 dark:text-gray-600"><Filter size={48} className="mb-4 opacity-20" /><p>{t('calendar.no_events')}</p></div>
                 )}
                 
                 {Object.entries(agendaData).map(([groupKey, group]) => (
@@ -728,7 +811,7 @@ const Calendar: React.FC<CalendarProps> = ({
                                         ) : !isSidebar && <div className="w-7" />}
 
                                         <div className="flex flex-col items-center w-10 shrink-0">
-                                            <span className="text-[0.625rem] uppercase font-bold text-gray-400 dark:text-gray-500">{DAYS_OF_WEEK[d.getDay()].slice(0,3)}</span>
+                                            <span className="text-[0.625rem] uppercase font-bold text-gray-400 dark:text-gray-500">{d.toLocaleDateString(i18n.language, { weekday: 'short' })}</span>
                                             <span className="text-xl font-bold text-gray-800 dark:text-gray-200">{d.getDate()}</span>
                                         </div>
                                         
@@ -740,7 +823,7 @@ const Calendar: React.FC<CalendarProps> = ({
                                             <div className="flex items-baseline justify-between">
                                                 <h3 className="font-bold text-gray-800 dark:text-gray-100 truncate flex items-center gap-1">
                                                     {event.title}
-                                                    {event.recurrence && <Repeat size={10} className="text-gray-400 dark:text-gray-500" />}
+                                                    {(event.rrule || event.id.includes('_')) && <Repeat size={10} className="text-gray-400 dark:text-gray-500" />}
                                                 </h3>
                                                 {!event.isAllDay && !isHoliday && (
                                                     <span className="text-xs font-medium text-gray-400 dark:text-gray-500 whitespace-nowrap">{formatTime(event.startTime)}</span>
@@ -787,19 +870,29 @@ const Calendar: React.FC<CalendarProps> = ({
                     const isToday = new Date().toDateString() === date.toDateString();
                     const isPast = date < new Date() && !isToday;
                     const dateId = `date-${date.toDateString().replace(/ /g, '-')}`;
-                    
+                    const isDragOver = dragOverDate === toLocalDateString(date);
+
                     return (
-                        <div key={idx} id={dateId} onClick={() => onDateClick(date)} className={`
-                            border-b border-gray-100 dark:border-gray-700 md:border-r p-2 flex flex-col gap-1.5 cursor-pointer group transition-colors 
-                            ${isToday ? 'bg-blue-50/40 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-900'} 
-                            ${isPast ? 'bg-gray-50/30 dark:bg-gray-800/50' : ''} 
-                            hover:bg-gray-50 dark:hover:bg-gray-800
-                            ${isMobile ? 'min-h-[240px]' : 'h-full min-h-0 flex-1'} 
-                        `}>
+                        <div 
+                            key={idx} 
+                            id={dateId} 
+                            onMouseDown={handleCellMouseDown}
+                            onClick={(e) => handleCellClick(e, date)} 
+                            onDragOver={(e) => handleDragOver(e, date)}
+                            onDrop={(e) => handleDrop(e, date)}
+                            className={`
+                                border-b border-gray-100 dark:border-gray-700 md:border-r p-2 flex flex-col gap-1.5 cursor-pointer group transition-colors 
+                                ${isToday ? 'bg-blue-50/40 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-900'} 
+                                ${isPast ? 'bg-gray-50/30 dark:bg-gray-800/50' : ''} 
+                                ${isDragOver ? 'bg-blue-100 dark:bg-blue-900/40 ring-inset ring-2 ring-blue-500' : ''}
+                                hover:bg-gray-50 dark:hover:bg-gray-800
+                                ${isMobile ? 'min-h-[240px]' : 'h-full min-h-0 flex-1'} 
+                            `}
+                        >
                              <div className="flex items-center justify-between md:justify-center mb-1 shrink-0">
-                                 <span className="md:hidden text-sm font-bold text-gray-500 dark:text-gray-400 uppercase">{date.toLocaleDateString('en-US', { weekday: 'short' })}</span>
+                                 <span className="md:hidden text-sm font-bold text-gray-500 dark:text-gray-400 uppercase">{date.toLocaleDateString(i18n.language, { weekday: 'short' })}</span>
                                  <div className="flex items-center gap-2">
-                                    <span className="text-[0.625rem] font-bold text-gray-300 dark:text-gray-600 uppercase tracking-tight">{date.toLocaleDateString('en-US', { month: 'short' })}</span>
+                                    <span className="text-[0.625rem] font-bold text-gray-300 dark:text-gray-600 uppercase tracking-tight">{date.toLocaleDateString(i18n.language, { month: 'short' })}</span>
                                     <div className={`text-sm font-bold w-7 h-7 flex items-center justify-center rounded-full ${isToday ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300'}`}>{date.getDate()}</div>
                                  </div>
                              </div>
@@ -808,27 +901,51 @@ const Calendar: React.FC<CalendarProps> = ({
                                  {dayEvents.map(event => {
                                      const realId = event.id.split('_')[0];
                                      const isHoliday = event.id.startsWith('holiday-');
-                                     const textColor = isHoliday ? (currentUser.preferences?.theme === 'DARK' ? '#e5e7eb' : '#1f2937') : getTextColor(event.userIds, event.title);
                                      
+                                     // Logic to detect if it's part of a series (Base or Instance)
+                                     // LOGIC CHANGE: Allow "draggable" attribute even for recurring items, 
+                                     // so we can catch the 'dragstart' event and show the shake animation.
+                                     const isSeriesMember = !!event.rrule || event.id.includes('_');
+                                     const allowDragAttempt = !isHoliday && !isSidebar;
+                                     // const isActuallyDraggable = allowDragAttempt && !isSeriesMember; // Removed: We want the grab cursor even if locked
+
+                                     const textColor = isHoliday ? (currentUser.preferences?.theme === 'DARK' ? '#e5e7eb' : '#1f2937') : getTextColor(event.userIds, event.title);
                                      const holidayClass = isHoliday ? 'opacity-70 italic bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200' : '';
+                                     
+                                     const isShaking = shakeId === event.id;
 
                                      return (
                                      <div 
                                         key={event.id}
+                                        draggable={allowDragAttempt}
+                                        onDragStart={(e) => handleDragStart(e, event)}
+                                        title={event.title}
+                                        onMouseDown={() => { ignoreClickRef.current = false; }} // Reset guard on fresh click
                                         onClick={(e) => { 
-                                            e.stopPropagation(); 
+                                            e.stopPropagation();
+                                            // CHECK GUARD: If we just shook the item, ignore this click
+                                            if (ignoreClickRef.current) {
+                                                ignoreClickRef.current = false;
+                                                return;
+                                            }
+
                                             if (isHoliday) return;
                                             const original = events.find(ev => ev.id === realId);
                                             if(original) onEventClick(original, new Date(event.startTime));
                                         }}
-                                        className={`px-2 py-1.5 rounded shadow-sm truncate hover:opacity-90 transition-opacity flex items-center gap-2 ${holidayClass}`}
+                                        className={`
+                                            px-2 py-1.5 rounded shadow-sm truncate hover:opacity-90 transition-all flex items-center gap-2 select-none relative
+                                            ${holidayClass} 
+                                            ${allowDragAttempt ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}
+                                            ${isShaking ? 'animate-shake-x ring-2 ring-red-400 z-50' : ''}
+                                        `}
                                         style={!isHoliday ? { background: getEventBackground(event.userIds), color: textColor } : {}}
                                       >
                                          {!event.isAllDay && !isHoliday && (
                                             <span className="opacity-90 text-xs font-medium tabular-nums shrink-0">{formatTime(event.startTime)}</span>
                                          )}
-                                         <span className="truncate text-xs font-bold leading-tight">{event.title}</span>
-                                         {event.recurrence && <Repeat size={10} className="ml-auto opacity-70 shrink-0" />}
+                                         <span className="truncate text-xs font-bold leading-tight flex-1">{event.title}</span>
+                                         {(event.rrule || event.id.includes('_')) && <Repeat size={10} className="ml-auto opacity-70 shrink-0" />}
                                       </div>
                                  )})}
                              </div>
@@ -845,11 +962,11 @@ const Calendar: React.FC<CalendarProps> = ({
                 
                 <div className="flex gap-2 items-center w-full sm:w-auto justify-between sm:justify-end">
                      <div>
-                        <button type="button" onClick={() => setShowManageUsersModal(true)} className="bg-gray-700 dark:bg-gray-200 hover:bg-gray-600 dark:hover:bg-gray-300 text-white dark:text-gray-900 px-3 py-2 rounded-lg font-bold text-xs flex items-center gap-2"><Users size={16} /> <span className="hidden sm:inline">Manage Participants</span></button>
+                        <button type="button" onClick={() => setShowManageUsersModal(true)} className="bg-gray-700 dark:bg-gray-200 hover:bg-gray-600 dark:hover:bg-gray-300 text-white dark:text-gray-900 px-3 py-2 rounded-lg font-bold text-xs flex items-center gap-2"><Users size={16} /> <span className="hidden sm:inline">{t('calendar.manage_participants')}</span></button>
                      </div>
 
                      <button type="button" onClick={handleBulkDeleteClick} className={`w-12 sm:w-24 px-0 py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2 transition-all duration-200 bg-gray-700 dark:bg-gray-200 text-red-300 dark:text-red-700 hover:bg-gray-600 dark:hover:bg-gray-300`}>
-                        <Trash2 size={16} /> <span className="hidden sm:inline">Delete</span>
+                        <Trash2 size={16} /> <span className="hidden sm:inline">{t('calendar.delete_bulk')}</span>
                      </button>
                 </div>
             </div>
@@ -859,11 +976,11 @@ const Calendar: React.FC<CalendarProps> = ({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setShowManageUsersModal(false)}>
             <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col max-h-[80vh] animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
                 <div className="flex justify-between items-center p-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50">
-                    <h3 className="text-sm font-bold text-gray-700 dark:text-gray-200 uppercase tracking-wide">Manage Participants</h3>
+                    <h3 className="text-sm font-bold text-gray-700 dark:text-gray-200 uppercase tracking-wide">{t('calendar.manage_participants')}</h3>
                     <button onClick={() => setShowManageUsersModal(false)} className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full"><X size={18} className="text-gray-500 dark:text-gray-400"/></button>
                 </div>
                 <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-[0.65rem] text-blue-700 dark:text-blue-300 text-center font-medium border-b border-blue-100 dark:border-blue-800">
-                    Tap to toggle assignment for all selected events.
+                    {t('calendar.tap_to_toggle')}
                 </div>
                 <div className="p-6 overflow-y-auto custom-scrollbar">
                     <div className="grid grid-cols-3 sm:grid-cols-4 gap-y-6 gap-x-2">
@@ -897,6 +1014,24 @@ const Calendar: React.FC<CalendarProps> = ({
                 </div>
             </div>
         </div>
+      )}
+
+      {/* Portal for Drag Error Tooltip - Floats above everything */}
+      {tooltipState && createPortal(
+          <div 
+            className="fixed z-[9999] pointer-events-none animate-in zoom-in-95 fade-in duration-200"
+            style={{ 
+                left: tooltipState.x, 
+                top: tooltipState.y,
+                transform: 'translateX(-50%)'
+            }}
+          >
+             <div className="relative bg-gray-900 dark:bg-red-600 text-white text-[0.65rem] font-bold px-3 py-2 rounded-lg shadow-xl text-center max-w-[200px] border border-gray-700 dark:border-red-500">
+                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-gray-900 dark:border-b-red-600"></div>
+                 {t('calendar.drag_recurrence_error')}
+             </div>
+          </div>,
+          document.body
       )}
     </div>
   );

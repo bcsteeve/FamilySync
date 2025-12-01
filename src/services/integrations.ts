@@ -48,10 +48,10 @@ export const getMoonPhase = (date: Date): { icon: string, label: string } | null
         
         // Phase offsets in ms
         const phases = [
-            { name: 'New Moon', offset: 0, icon: '🌑' },
-            { name: 'First Quarter', offset: 0.25, icon: '🌓' },
-            { name: 'Full Moon', offset: 0.5, icon: '🌕' },
-            { name: 'Last Quarter', offset: 0.75, icon: '🌗' }
+            { name: 'moon.new_moon', offset: 0, icon: '🌑' },
+            { name: 'moon.first_quarter', offset: 0.25, icon: '🌓' },
+            { name: 'moon.full_moon', offset: 0.5, icon: '🌕' },
+            { name: 'moon.last_quarter', offset: 0.75, icon: '🌗' }
         ];
 
         for (const p of phases) {
@@ -74,22 +74,9 @@ export interface WeatherData {
     weatherCode: number;
 }
 
-export const getWeatherDescription = (code: number): string => {
-    const codes: {[key: number]: string} = {
-        0: 'Clear sky',
-        1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
-        45: 'Fog', 48: 'Depositing rime fog',
-        51: 'Light drizzle', 53: 'Moderate drizzle', 55: 'Dense drizzle',
-        56: 'Light freezing drizzle', 57: 'Dense freezing drizzle',
-        61: 'Slight rain', 63: 'Moderate rain', 65: 'Heavy rain',
-        66: 'Light freezing rain', 67: 'Heavy freezing rain',
-        71: 'Slight snow', 73: 'Moderate snow', 75: 'Heavy snow',
-        77: 'Snow grains',
-        80: 'Slight rain showers', 81: 'Moderate rain showers', 82: 'Violent rain showers',
-        85: 'Slight snow showers', 86: 'Heavy snow showers',
-        95: 'Thunderstorm', 96: 'Thunderstorm with slight hail', 99: 'Thunderstorm with heavy hail'
-    };
-    return codes[code] || 'Unknown';
+export const getWeatherDescriptionKey = (code: number): string => {
+    // Returns translation key instead of hardcoded string
+    return `weather.${code}`;
 }
 
 export const getWeatherIcon = (code: number) => {
@@ -239,8 +226,8 @@ export const fetchHolidays = async (year: number, countryCode: string, subdivisi
                 
                 return {
                     id: `holiday-${h.date}-${h.name}`,
-                    title: `🎉 ${h.name}`, 
-                    description: h.localName,
+                    title: `🎉 ${h.localName || h.name}`, 
+                    description: h.name,
                     startTime: localDate.toISOString(),
                     endTime: localDate.toISOString(),
                     isAllDay: true,

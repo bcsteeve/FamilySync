@@ -1,15 +1,30 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User, CalendarEvent, TodoItem, ShoppingItem, AppView, SystemSettings, ShoppingStore, ShoppingCategory } from './types';
 import { PALETTES, PaletteKey } from './constants';
 import Calendar from './components/Calendar';
 import Lists from './components/Lists';
 import Settings from './components/Settings';
 import EventModal from './components/EventModal';
-import { Calendar as CalIcon, List as ListIcon, LogOut, Plus, Search, Undo, Redo, Loader2, Columns, Lock, User as UserIcon, AlertCircle, Shield } from 'lucide-react';
+import { Calendar as CalIcon, List as ListIcon, LogOut, Plus, Search, Undo, Redo, Loader2, Columns, Lock, User as UserIcon, AlertCircle, Shield, Globe } from 'lucide-react';
 import { fetchWeather, WeatherData, fetchHolidays } from './services/integrations';
 import { storage } from './services/storage';
+import { pb } from './services/pb'; // Direct PB access for subscriptions
 import { UserContext } from './contexts/UserContext';
 import { ThemeContext } from './contexts/ThemeContext';
+import { useTranslation } from 'react-i18next';
+import { SUPPORTED_LANGUAGES } from './i18n';
+import "react-datepicker/dist/react-datepicker.css";
+import { registerLocale, setDefaultLocale } from "react-datepicker";
+import { enUS, es, fr, de, it, pt } from 'date-fns/locale';
+
+// Register Locales for Datepicker
+registerLocale('en', enUS);
+registerLocale('en-US', enUS);
+registerLocale('es', es);
+registerLocale('fr', fr);
+registerLocale('de', de);
+registerLocale('it', it);
+registerLocale('pt', pt);
 
 interface HistoryState {
   events: CalendarEvent[];
@@ -19,6 +34,7 @@ interface HistoryState {
 }
 
 const App: React.FC = () => {
+  const { t, i18n } = useTranslation();
   // --- Data State ---
   const [isLoaded, setIsLoaded] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
@@ -46,11 +62,25 @@ const App: React.FC = () => {
 
   // --- UI State ---
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [globalToast, setGlobalToast] = useState<{ msg: string, type: 'info' | 'success' } | null>(null);
   
+  // Ref for Realtime Callbacks (Prevents connection cycling)
+  const currentUserRef = useRef<User | null>(null);
+
   // Login State
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+
+  // --- Derived State (MUST BE DEFINED BEFORE EFFECTS) ---
+  const currentUser = users.find(u => u.id === currentUserId) || null;
+  
+  // Update Ref whenever user changes
+  useEffect(() => {
+      currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  const activePalette = PALETTES[paletteKey] || PALETTES.STANDARD;
 
   // Initialize View from LocalStorage
   const [view, setView] = useState<AppView>(() => {
@@ -84,7 +114,119 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-// --- SINGLE BOOTSTRAP EFFECT ---
+// --- REALTIME SUBSCRIPTIONS ---
+  useEffect(() => {
+      // Only subscribe if loaded and we have a valid session (currentUserId check is sufficient stability)
+      if (!isLoaded || !currentUserId) return;
+
+      const notify = (msg: string) => {
+          setGlobalToast({ msg, type: 'info' });
+          setTimeout(() => setGlobalToast(null), 3000);
+      };
+
+      // MAPPERS: Convert Raw DB Records -> Frontend Types
+      const mapShopping = (r: any): ShoppingItem => ({
+          id: r.id,
+          content: r.content,
+          note: r.note,
+          isInCart: r.isInCart,
+          isPrivate: r.isPrivate,
+          addedByUserId: r.addedBy, 
+          addedAt: r.created,       
+          seenByUserIds: r.seenBy || [],
+          priority: r.priority, 
+          order: r.order,
+          userCategoryIds: r.userCategoryIds || {},
+          creatorCategoryId: r.category,
+          logs: r.logs || []
+      });
+
+      const mapTodo = (r: any): TodoItem => ({
+          id: r.id,
+          content: r.content,
+          note: r.note,
+          isCompleted: r.isCompleted,
+          userId: r.userId,
+          priority: r.priority,
+          deadline: r.deadline,
+          isPrivate: r.isPrivate
+      });
+
+      const mapEvent = (r: any): CalendarEvent => ({
+          id: r.id,
+          title: r.title,
+          description: r.description,
+          startTime: r.startTime,
+          endTime: r.endTime,
+          isAllDay: r.isAllDay,
+          userIds: r.participants || [], 
+          rrule: r.rrule,
+          icalUID: r.icalUID,
+          exdates: r.exdates
+      });
+
+      // 1. Shopping Subscription
+      pb.collection('shopping_items').subscribe('*', (e) => {
+          const item = mapShopping(e.record);
+          const selfId = currentUserRef.current?.id;
+          
+          if (e.action === 'create') {
+              // IGNORE IF MINE (Optimistic)
+              if (item.addedByUserId === selfId) return;
+              
+              setShopping(prev => [item, ...prev]);
+              notify(t('notifications.item_added', { item: item.content }));
+          } else if (e.action === 'update') {
+              setShopping(prev => prev.map(i => i.id === item.id ? { ...i, ...item } : i));
+          } else if (e.action === 'delete') {
+              setShopping(prev => prev.filter(i => i.id !== item.id));
+          }
+      });
+
+      // 2. Todos Subscription
+      pb.collection('todos').subscribe('*', (e) => {
+          const todo = mapTodo(e.record);
+          const selfId = currentUserRef.current?.id;
+
+          if (e.action === 'create') {
+              if (todo.userId === selfId) return; // Ignore my own
+              
+              setTodos(prev => [todo, ...prev]);
+              notify(t('notifications.todo_update'));
+          } else if (e.action === 'update') {
+              setTodos(prev => prev.map(t => t.id === todo.id ? { ...t, ...todo } : t));
+          } else if (e.action === 'delete') {
+              setTodos(prev => prev.filter(t => t.id !== todo.id));
+          }
+      });
+
+      // 3. Events Subscription
+      pb.collection('events').subscribe('*', (e) => {
+          const event = mapEvent(e.record);
+
+          if (e.action === 'create') {
+              setEvents(prev => {
+                  // DEDUPE
+                  if (prev.some(ev => ev.id === event.id || (ev.icalUID && ev.icalUID === event.icalUID))) {
+                      return prev;
+                  }
+                  return [...prev, event];
+              });
+          } else if (e.action === 'update') {
+              setEvents(prev => prev.map(ev => ev.id === event.id ? event : ev));
+          } else if (e.action === 'delete') {
+              setEvents(prev => prev.filter(ev => ev.id !== event.id));
+          }
+      });
+
+      return () => {
+          pb.collection('shopping_items').unsubscribe();
+          pb.collection('todos').unsubscribe();
+          pb.collection('events').unsubscribe();
+      };
+  }, [isLoaded, currentUserId]); // Depend on ID, not User Object, to stay stable
+
+  // --- SINGLE BOOTSTRAP EFFECT ---
   useEffect(() => {
     const bootstrap = async () => {
         // 1. Authenticate / Re-validate
@@ -230,9 +372,19 @@ const updateStores = async (newStores: ShoppingStore[]) => {
         ));
 
         // B. CRITICAL: Update Categories that referenced the old Temp Store IDs
-        setCategories(prev => prev.map(c => 
+        const updatedCategories = categories.map(c => 
             idMap[c.storeId] ? { ...c, storeId: idMap[c.storeId] } : c
-        ));
+        );
+        
+        // Update Local State
+        setCategories(updatedCategories);
+
+        // Update DB (Fixes "Unknown Store" issue by persisting the new Store IDs to the categories)
+        const catsToUpdate = updatedCategories.filter(c => idMap[c.storeId || '']);
+        for (const cat of catsToUpdate) {
+            try { await storage.pb.collection('shopping_categories').update(cat.id, cat); } 
+            catch (e) { console.error("Failed to patch category link", e); }
+        }
     }
 }
 
@@ -406,7 +558,12 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
         const ONE_DAY = 24 * 60 * 60 * 1000;
         const lastFetchTime = settings.lastHolidayFetch ? new Date(settings.lastHolidayFetch).getTime() : 0;
         
-        if ((now - lastFetchTime) < ONE_DAY && holidayEvents.length > 0) return;
+        // Cache Busting: Did the region change?
+        const currentParams = `${settings.holidayCountryCode}|${settings.holidaySubdivisionCode || ''}`;
+        const paramsChanged = currentParams !== settings.lastHolidayParams;
+
+        // If params match AND it's been less than a day, skip fetch
+        if (!paramsChanged && (now - lastFetchTime) < ONE_DAY && holidayEvents.length > 0) return;
 
         try {
             const currentYear = new Date().getFullYear();
@@ -425,7 +582,8 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
                 storage.saveHolidays(combined); 
                 updateSettings({
                     ...settings,
-                    lastHolidayFetch: new Date().toISOString()
+                    lastHolidayFetch: new Date().toISOString(),
+                    lastHolidayParams: currentParams
                 });
             }
         } catch (e) {
@@ -434,11 +592,10 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
     };
     refreshHolidays();
 
-  }, [isLoaded, settings.weatherEnabled, settings.weatherLat, settings.holidaysEnabled, settings.holidayCountryCode]);
+  }, [isLoaded, settings.weatherEnabled, settings.weatherLat, settings.holidaysEnabled, settings.holidayCountryCode, settings.holidaySubdivisionCode]);
 
   // --- Global Font Size & Theme ---
-  const currentUser = users.find(u => u.id === currentUserId) || null;
-  const activePalette = PALETTES[paletteKey] || PALETTES.STANDARD;
+  // (currentUser moved to top)
 
   // HELPER FUNCTION (UPDATED FOR CONTEXT)
   const getUserColor = (u: User) => {
@@ -452,14 +609,28 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
   }, [currentUser]);
 
   useEffect(() => {
-      const theme = currentUser?.preferences?.theme || 'LIGHT';
-      if (theme === 'DARK') {
-          document.documentElement.classList.add('dark');
-      } else {
-          document.documentElement.classList.remove('dark');
-      }
+      // 1. If User Logged In: Respect their preference
+      if (currentUser) {
+          const theme = currentUser.preferences?.theme || 'LIGHT';
+          if (theme === 'DARK') document.documentElement.classList.add('dark');
+          else document.documentElement.classList.remove('dark');      } else {
+          // 2. If Login Screen: Respect System Preference
+          if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+              document.documentElement.classList.add('dark');
+          } else {
+              document.documentElement.classList.remove('dark');
+          }
+	  }
   }, [currentUser]);
 
+  useEffect(() => {
+      if (currentUser?.preferences?.language) {
+          i18n.changeLanguage(currentUser.preferences.language);
+          // Sync Datepicker Locale
+          const lang = currentUser.preferences.language.split('-')[0];
+          setDefaultLocale(lang); 
+      }
+  }, [currentUser, i18n]);
 
   // --- Event Modal State ---
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
@@ -507,7 +678,7 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
           window.location.reload();
       } catch (err) {
           console.error(err);
-          setLoginError('Invalid credentials');
+          setLoginError(t('messages.invalid_creds'));
       }
   };
 
@@ -516,7 +687,7 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
       if (!loginUsername.trim() || !loginPassword.trim()) return;
 
       if (loginPassword.length < 8) {
-          setLoginError("Password must be at least 8 characters.");
+          setLoginError(t('messages.pass_min_chars'));
           return;
       }
       
@@ -529,14 +700,14 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
       } catch (err: any) {
           console.error(err);
           const pbMessage = err?.data?.message || err?.message || "Unknown error";
-          setLoginError(`Failed to create user: ${pbMessage}`);
+          setLoginError(t('messages.create_fail', { error: pbMessage }));
       }
   };
 
   if (!isLoaded) {
       return (
           <div className="h-screen w-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-              <Loader2 className="animate-spin text-blue-500" size={48} />
+              <Loader2 className="animate-spin text-blue-500" size={48} title={t('app.loading')} />
           </div>
       );
   }
@@ -544,52 +715,77 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
   // --- Login Screen ---
   if (!currentUser) {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-gray-900 text-white p-6 relative overflow-hidden">
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white p-6 relative overflow-hidden transition-colors duration-300">
         <div className="absolute top-0 left-0 w-64 h-64 bg-blue-500 rounded-full blur-[100px] opacity-20 -translate-x-1/2 -translate-y-1/2"></div>
         <div className="absolute bottom-0 right-0 w-64 h-64 bg-purple-500 rounded-full blur-[100px] opacity-20 translate-x-1/2 translate-y-1/2"></div>
         
+        {/* Language Dropdown (Top Right) */}
+        <div className="absolute top-6 right-6 z-20 group">
+            {/* 1. VISUAL LAYER (Perfectly styled text) */}
+            <div className="flex items-center gap-2 text-gray-500 hover:text-blue-600 dark:hover:text-white transition-colors cursor-pointer pl-2 pr-6">
+                <Globe size={16} />
+                <span className="text-xs font-bold uppercase tracking-wider">
+                    {isMobile ? i18n.language?.toUpperCase() : new Intl.DisplayNames([i18n.language], { type: 'language' }).of(i18n.language)}
+                </span>
+            </div>
+
+            {/* 2. FUNCTIONAL LAYER (Invisible overlay) */}
+            <select
+                value={i18n.language}
+                onChange={(e) => i18n.changeLanguage(e.target.value)}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+            >
+                {SUPPORTED_LANGUAGES.map(lang => (
+                    <option key={lang} value={lang} className="text-gray-900 bg-white dark:bg-gray-800 dark:text-white">
+                        {/* Mobile: "EN" | Desktop: "English" */}
+                        {isMobile ? lang.toUpperCase() : new Intl.DisplayNames([lang], { type: 'language' }).of(lang)}
+                    </option>
+                ))}
+            </select>
+        </div>
+
         <div className="z-10 flex flex-col items-center w-full max-w-xs animate-in fade-in zoom-in-95 duration-500">
-            <h1 className="text-5xl font-bold mb-2 tracking-tighter bg-gradient-to-r from-blue-400 to-purple-400 text-transparent bg-clip-text">FamilySync</h1>
+            <h1 className="text-5xl font-bold mb-2 tracking-tighter bg-gradient-to-r from-blue-600 to-purple-600 dark:from-blue-400 dark:to-purple-400 text-transparent bg-clip-text">{t('app.title')}</h1>
             
             {isSetupMode ? (
                  <div className="text-center mb-8">
-                     <span className="bg-blue-500/20 text-blue-300 text-xs font-bold px-2 py-1 rounded-full border border-blue-500/50">Setup</span>
-                     <p className="text-gray-300 mt-3 text-sm">Create the <b>Family Admin</b> account.</p>
+                     <span className="bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-500/20 dark:text-blue-300 dark:border-blue-500/50 text-xs font-bold px-2 py-1 rounded-full border">{t('auth.setup')}</span>
+                     <p className="text-gray-600 dark:text-gray-300 mt-3 text-sm">{t('auth.create_admin')}</p>
                  </div>
             ) : (
-                 <p className="text-gray-400 mb-10 text-center text-sm">The data-dense dashboard for busy families.</p>
+                 <p className="text-gray-500 dark:text-gray-400 mb-10 text-center text-sm">{t('app.tagline')}</p>
             )}
             
             <form onSubmit={isSetupMode ? handleSetup : handleLogin} className="w-full flex flex-col gap-4">
                 <div className="relative">
-                    <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+                    <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" size={18} />
                     <input 
                         type="text" 
-                        placeholder={isSetupMode ? "Admin Name (e.g. Mom, Dad)" : "Username"}
+                        placeholder={t('auth.username')}
                         value={loginUsername}
                         onChange={e => setLoginUsername(e.target.value)}
-                        className="w-full bg-gray-800 border border-gray-700 rounded-xl py-3 pl-10 pr-4 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                        className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl py-3 pl-10 pr-4 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
                     />
                 </div>
                 <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" size={18} />
                     <input 
                         type="password" 
-                        placeholder={isSetupMode ? "Create Password" : "Password"}
+                        placeholder={t('auth.password')}
                         value={loginPassword}
                         onChange={e => setLoginPassword(e.target.value)}
-                        className="w-full bg-gray-800 border border-gray-700 rounded-xl py-3 pl-10 pr-4 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                        className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl py-3 pl-10 pr-4 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
                     />
                 </div>
                 
                 {loginError && (
-                    <div className="text-red-400 text-xs font-bold flex items-center gap-2 bg-red-900/20 p-2 rounded-lg">
+                    <div className="text-red-600 dark:text-red-400 text-xs font-bold flex items-center gap-2 bg-red-50 dark:bg-red-900/20 p-2 rounded-lg border border-red-100 dark:border-red-900/50">
                         <AlertCircle size={14} /> {loginError}
                     </div>
                 )}
 
                 <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-900/20 active:scale-95 transition-all mt-2 flex items-center justify-center gap-2">
-                    {isSetupMode ? <><Plus size={18}/> Create Admin Account</> : 'Sign In'}
+                    {isSetupMode ? <><Plus size={18}/> {t('auth.create_admin')}</> : t('auth.sign_in')}
                 </button>
             </form>
         </div>
@@ -611,15 +807,47 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
               </div>
               <div className="flex flex-col leading-none">
                 <span className="font-bold text-gray-800 dark:text-gray-100 text-sm">
-                    {view === AppView.CALENDAR && 'Family Calendar'}
-                    {view === AppView.LISTS && 'Lists'}
-                    {view === AppView.SETTINGS && 'Settings'}
+                    {view === AppView.CALENDAR && t('app.calendar')}
+                    {view === AppView.LISTS && t('app.lists')}
+                    {view === AppView.SETTINGS && t('app.settings')}
                 </span>
-                {currentUser.isAdmin && <span className="text-[0.5625rem] text-gray-400 font-semibold uppercase">Admin</span>}
+                {currentUser.isAdmin && <span className="text-[0.5625rem] text-gray-400 font-semibold uppercase">{t('app.admin')}</span>}
               </div>
             </div>
-          </div>
 
+            {/* Global Language Switcher (Authenticated View) */}
+            <div className="relative group flex items-center">
+                {/* 1. VISUAL LAYER */}
+                <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-gray-200 transition-colors cursor-pointer pl-2 pr-6">
+                    <Globe size={14} />
+                    <span className="text-xs font-bold uppercase tracking-wider">
+                        {isMobile ? i18n.language?.toUpperCase() : new Intl.DisplayNames([i18n.language], { type: 'language' }).of(i18n.language)}
+                    </span>
+                </div>
+
+                {/* 2. FUNCTIONAL LAYER */}
+                <select
+                    value={i18n.language}
+                    onChange={(e) => {
+                        // 1. Update i18n immediately
+                        i18n.changeLanguage(e.target.value);
+                        // 2. Persist to User Preferences
+                        const updatedUsers = users.map(u => 
+                            u.id === currentUser.id ? { ...u, preferences: { ...u.preferences!, language: e.target.value } } : u
+                        );
+                        updateUsers(updatedUsers, true); // true = skip undo history for this
+                    }}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                >
+                    {SUPPORTED_LANGUAGES.map(lang => (
+                         <option key={lang} value={lang} className="text-gray-900 bg-white dark:bg-gray-800 dark:text-white">
+                             {/* Use language code (EN/ES) for compactness in top bar */}
+                            {isMobile ? lang.toUpperCase() : new Intl.DisplayNames([lang], { type: 'language' }).of(lang)}
+                         </option>
+                     ))}
+                </select>
+            </div>
+		  </div>
           {/* Content Container */}
           <div className="flex-1 overflow-hidden relative flex">
             
@@ -672,7 +900,7 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
             {view !== AppView.SETTINGS && (
                 <div className="hidden 2xl:flex w-96 border-l border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 flex-col shrink-0 shadow-xl z-10">
                     <div className="p-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2 text-gray-500 dark:text-gray-400 font-bold text-xs uppercase tracking-wider">
-                        <Columns size={14} /> Dashboard
+                        <Columns size={14} /> {t('calendar.agenda')}
                     </div>
                     <div className="flex-1 overflow-hidden relative">
                         {view === AppView.CALENDAR ? (
@@ -705,6 +933,16 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
             )}
           </div>
 
+          {/* Global Toast Notification */}
+          {globalToast && (
+              <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[150] animate-in slide-in-from-top-2 fade-in duration-300 pointer-events-none">
+                  <div className="bg-gray-900/90 dark:bg-white/90 text-white dark:text-gray-900 px-6 py-3 rounded-full shadow-2xl backdrop-blur-md flex items-center gap-3 font-bold text-sm border border-gray-700 dark:border-gray-200">
+                      <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"/>
+                      {globalToast.msg}
+                  </div>
+              </div>
+          )}
+
           {/* History Pill */}
           {(history.length > 0 || future.length > 0) && (
               <div 
@@ -714,11 +952,11 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
                 onClick={(e) => { e.stopPropagation(); setHistoryIdle(false); }}
               >
                   <button onClick={undo} disabled={history.length === 0} className="flex items-center gap-1 hover:text-blue-300 dark:hover:text-blue-600 disabled:opacity-30 text-xs font-bold uppercase tracking-wider">
-                      <Undo size={14} /> Undo
+                      <Undo size={14} /> {t('app.undo')}
                   </button>
                   <div className="w-px h-4 bg-gray-600 dark:bg-gray-300"></div>
                   <button onClick={redo} disabled={future.length === 0} className="flex items-center gap-1 hover:text-blue-300 dark:hover:text-blue-600 disabled:opacity-30 text-xs font-bold uppercase tracking-wider">
-                      Redo <Redo size={14} />
+                      {t('app.redo')} <Redo size={14} />
                   </button>
               </div>
           )}
@@ -737,37 +975,37 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
           <div className="h-16 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 flex shrink-0 pb-safe z-30">
             <button onClick={() => setView(AppView.CALENDAR)} className={`flex-1 flex flex-col items-center justify-center gap-1 ${view === AppView.CALENDAR ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}`}>
               <CalIcon size={24} strokeWidth={view === AppView.CALENDAR ? 2.5 : 2} />
-              <span className="text-[0.625rem] font-bold uppercase">Calendar</span>
+              <span className="text-[0.625rem] font-bold uppercase">{t('app.calendar')}</span>
             </button>
             <button onClick={() => setView(AppView.LISTS)} className={`flex-1 flex flex-col items-center justify-center gap-1 ${view === AppView.LISTS ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}`}>
               <ListIcon size={24} strokeWidth={view === AppView.LISTS ? 2.5 : 2} />
-              <span className="text-[0.625rem] font-bold uppercase">Lists</span>
+              <span className="text-[0.625rem] font-bold uppercase">{t('app.lists')}</span>
             </button>
             <button onClick={() => setView(AppView.SETTINGS)} className={`flex-1 flex flex-col items-center justify-center gap-1 ${view === AppView.SETTINGS ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}`}>
               <Shield size={24} strokeWidth={view === AppView.SETTINGS ? 2.5 : 2} />
-              <span className="text-[0.625rem] font-bold uppercase">Settings</span>
+              <span className="text-[0.625rem] font-bold uppercase">{t('app.settings')}</span>
             </button>
             <button 
               onClick={() => { 
-                  // 1. Clear PocketBase Auth
-				  storage.pb.authStore.clear(); 
-				  
-				  // 2. Clear Local Storage prefs
-				  localStorage.removeItem('fs_active_view'); 
-				  localStorage.removeItem('fs_active_list_tab'); 
-				  
-				  // 3. Reset App State
+                  // 1. Reset App State (Triggers cleanup effect while Auth is still valid)
 				  setCurrentUserId(null); 
 				  setIsSetupMode(false);
-				  
-				  // 4. SECURITY FIX: Wipe credentials from memory
-				  setLoginUsername('');
-				  setLoginPassword('');
+
+                  // 2. Clear Local Storage prefs
+				  localStorage.removeItem('fs_active_view'); 
+				  localStorage.removeItem('fs_active_list_tab'); 
+
+                  // 3. Clear PocketBase Auth (Delayed slightly to allow unsubscribe to fire)
+                  setTimeout(() => {
+				      storage.pb.authStore.clear(); 
+				      setLoginUsername('');
+				      setLoginPassword('');
+                  }, 50);
               }} 
               className="flex-1 flex flex-col items-center justify-center gap-1 text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400"
             >
               <LogOut size={24} />
-              <span className="text-[0.625rem] font-bold uppercase">Logout</span>
+              <span className="text-[0.625rem] font-bold uppercase">{t('app.logout')}</span>
             </button>
           </div>
 

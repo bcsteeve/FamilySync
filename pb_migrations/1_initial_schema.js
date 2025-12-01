@@ -54,7 +54,9 @@ migrate((app) => {
   events.fields.add(new Field({ name: "startTime", type: "date", required: true }));
   events.fields.add(new Field({ name: "endTime", type: "date" }));
   events.fields.add(new Field({ name: "isAllDay", type: "bool" }));
-  events.fields.add(new Field({ name: "recurrence", type: "json" }));
+  // REPLACED: JSON recurrence with Standard RRULE text
+  events.fields.add(new Field({ name: "rrule", type: "text" }));
+  events.fields.add(new Field({ name: "icalUID", type: "text" }));
   events.fields.add(new Field({ name: "exdates", type: "json" }));
   events.fields.add(new Field({ name: "participants", type: "relation", collectionId: users.id, maxSelect: 999 }));
   events.fields.add(new Field({ name: "created", type: "autodate", onCreate: true, onUpdate: false}));
@@ -118,10 +120,12 @@ migrate((app) => {
   shopping.fields.add(new Field({ name: "isInCart", type: "bool" }));
   shopping.fields.add(new Field({ name: "isPrivate", type: "bool" }));
   shopping.fields.add(new Field({ name: "priority", type: "select", values: ["LOW", "NORMAL", "URGENT"] }));
+  shopping.fields.add(new Field({ name: "order", type: "number" }));
   shopping.fields.add(new Field({ name: "category", type: "text" }));
   shopping.fields.add(new Field({ name: "userCategoryIds", type: "json" }));
   shopping.fields.add(new Field({ name: "addedBy", type: "relation", collectionId: users.id, maxSelect: 1 }));
   shopping.fields.add(new Field({ name: "seenBy", type: "relation", collectionId: users.id, maxSelect: 999 }));
+  shopping.fields.add(new Field({ name: "logs", type: "json" }));
   shopping.fields.add(new Field({ name: "created", type: "autodate", onCreate: true, onUpdate: false}));
   shopping.fields.add(new Field({ name: "updated", type: "autodate", onCreate: true, onUpdate: true}));
   

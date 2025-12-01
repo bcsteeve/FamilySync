@@ -2,9 +2,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { CalendarEvent, User, RecurrenceFreq } from '../types';
 import { toLocalDateString } from '../constants';
-import { X, Trash2, Save, Calendar as CalIcon, List, Keyboard, Repeat, Check, Infinity as InfinityIcon, AlertCircle, RefreshCw, Info, Undo } from 'lucide-react';
+import { X, Trash2, Save, Calendar as CalIcon, Repeat, Check, Infinity as InfinityIcon, AlertCircle, RefreshCw, Info, Undo, Clock } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { useTranslation } from 'react-i18next';
+import DatePicker from 'react-datepicker';
+import { createRRule, parseRRule } from '../services/recurrence';
+import { v4 as uuidv4 } from 'uuid';
 
 interface EventModalProps {
   event: CalendarEvent | null;
@@ -20,10 +24,12 @@ const EventModal: React.FC<EventModalProps> = ({
 }) => {
   const { users, currentUser } = useUser();
   const { activePalette, getUserColor } = useTheme();
+  const { t } = useTranslation();
   const [formData, setFormData] = useState<Partial<CalendarEvent>>({});
+  const [initialState, setInitialState] = useState<string>(''); // For dirty checking
   const [deleteStage, setDeleteStage] = useState<'IDLE' | 'SERIES_CHOICE'>('IDLE');
-  const [manualTimeMode, setManualTimeMode] = useState(false);
   const [showRecurrence, setShowRecurrence] = useState(false);
+  const [isComplexRule, setIsComplexRule] = useState(false); // New Guardrail
 
   // Hook: Check if we are compliant with React Rules (must be top level)
   // Sort Exdates Chronologically - Moved to top to prevent conditional hook error
@@ -32,68 +38,67 @@ const EventModal: React.FC<EventModalProps> = ({
       return [...formData.exdates].sort((a, b) => a.localeCompare(b));
   }, [formData.exdates]);
 
-  // Generate 15-min time slots for dropdown
-  const timeSlots = useMemo(() => {
-    const slots = [];
-    // 00:00 to 23:45
-    for (let i = 0; i < 96; i++) {
-        const totalMins = i * 15;
-        const h = Math.floor(totalMins / 60);
-        const m = totalMins % 60;
-        
-        const hStr = h.toString().padStart(2, '0');
-        const mStr = m.toString().padStart(2, '0');
-        const val = `${hStr}:${mStr}`;
-        
-        // Format: 05:00 PM (Leading zero, Uppercase AM/PM)
-        const h12 = h % 12 || 12;
-        const h12Str = h12.toString().padStart(2, '0');
-        const ampm = h >= 12 ? 'PM' : 'AM';
-        const label = `${h12Str}:${mStr} ${ampm}`;
-        
-        slots.push({ value: val, label });
-    }
-    return slots;
-  }, []);
-
   useEffect(() => {
     if (isOpen) {
-      setDeleteStage('IDLE'); 
-      setManualTimeMode(false); 
+      setDeleteStage('IDLE');
+      setIsComplexRule(false);
       
+      let initData: Partial<CalendarEvent> = {};
+      let showRec = false;
+
       if (event) {
         // LOGIC CHANGE:
         // If Recurring: Load the SERIES START (Anchor), not the instance date.
-        // If Single: Load the INSTANCE date (allows moving single events easily).
         
-        if (event.recurrence) {
-             setFormData({ 
+        let recurrenceState = undefined;
+        let showRec = false;
+
+        if (event.rrule) {
+            showRec = true;
+            const parsed = parseRRule(event.rrule);
+            if (parsed) {
+                recurrenceState = parsed;
+            } else {
+                setIsComplexRule(true); // Valid RRULE but too complex for our UI
+            }
+        }
+
+        if (showRec) {
+            initData = { 
                 ...event,
-                startTime: event.startTime // Always the Series Anchor
-            });
+                startTime: event.startTime,
+                recurrence: recurrenceState as any
+            };
         } else {
              // Use initialDate if provided (the slot clicked), otherwise existing start time
              const start = initialDate ? new Date(initialDate) : new Date(event.startTime);
-             setFormData({ 
+             initData = { 
                 ...event,
-                startTime: start.toISOString()
-            });
+                startTime: start.toISOString(),
+                recurrence: undefined
+            };
         }
-        setShowRecurrence(!!event.recurrence);
+        setShowRecurrence(showRec);
       } else {
         // New Event
         const start = initialDate ? new Date(initialDate) : new Date();
         start.setHours(9, 0, 0, 0); 
         
-        setFormData({
+        initData = {
           title: '',
           description: '',
           startTime: start.toISOString(),
           userIds: [currentUser.id],
           isAllDay: false
-        });
+        };
         setShowRecurrence(false);
       }
+      
+      setFormData(initData);
+      // Store stringified snapshot for deep comparison later
+      // We sort userIds to ensure array order doesn't trigger false positives
+      if (initData.userIds) initData.userIds.sort();
+      setInitialState(JSON.stringify(initData));
     }
   }, [isOpen, event, initialDate, currentUser.id]);
 
@@ -105,10 +110,19 @@ const EventModal: React.FC<EventModalProps> = ({
         return;
     }
     
-    // Clean up recurrence data
-    let recurrence = formData.recurrence;
-    if (!showRecurrence) {
-        recurrence = undefined;
+    // Generate RRULE
+    let rruleStr: string | undefined = undefined;
+    if (showRecurrence) {
+        if (isComplexRule) {
+            // Preserve existing complex rule if we are just editing Title/Time
+            rruleStr = event?.rrule;
+        } else if (formData.recurrence?.freq && formData.startTime) {
+            rruleStr = createRRule(
+                formData.recurrence.freq, 
+                new Date(formData.startTime), 
+                formData.recurrence.until ? new Date(formData.recurrence.until) : undefined
+            );
+        }
     }
 
     let finalStart = formData.startTime;
@@ -145,8 +159,9 @@ const EventModal: React.FC<EventModalProps> = ({
       endTime: finalEnd,
       userIds: formData.userIds || [],
       isAllDay: !!formData.isAllDay,
-      recurrence,
-      exdates: formData.exdates // Preserve existing exdates
+      rrule: rruleStr,
+      icalUID: event?.icalUID || uuidv4(), // Generate UID immediately for local deduping
+      exdates: formData.exdates 
     };
 
     // Dirty Check: If the object is identical to the original, skip save to avoid phantom history
@@ -170,7 +185,7 @@ const EventModal: React.FC<EventModalProps> = ({
       e.preventDefault();
       if (!event || !event.id) return;
 
-      if (formData.recurrence) {
+      if (event.rrule) {
           setDeleteStage('SERIES_CHOICE');
       } else {
           onDelete(event.id);
@@ -215,45 +230,30 @@ const EventModal: React.FC<EventModalProps> = ({
       setDeleteStage('IDLE');
   }
 
-  // Helper to safely get YYYY-MM-DD from an ISO string by respecting local time construction
-  const getDateInputValue = (isoString?: string) => {
-      if (!isoString) return '';
-      const date = new Date(isoString);
-      const y = date.getFullYear();
-      const m = (date.getMonth() + 1).toString().padStart(2, '0');
-      const d = date.getDate().toString().padStart(2, '0');
-      return `${y}-${m}-${d}`;
-  }
-
-  const getDisplayDate = (isoString?: string) => {
-      if (!isoString) return 'Select Date';
-      const date = new Date(isoString);
-      return date.toLocaleDateString('en-US', { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' });
-  }
-
-  const getTimeInputValue = (isoString?: string) => {
-      if (!isoString) return '';
-      const date = new Date(isoString);
-      const h = date.getHours().toString().padStart(2, '0');
-      const m = date.getMinutes().toString().padStart(2, '0');
-      return `${h}:${m}`;
-  }
-
-  const updateDateTime = (type: 'date' | 'time', value: string) => {
+  const handleDateChange = (date: Date | null) => {
+      if (!date) return;
+      
       const current = new Date(formData.startTime || new Date());
-      if (type === 'date') {
-          // Parse YYYY-MM-DD manually to avoid UTC shifts
-          const [y, m, d] = value.split('-').map(Number);
-          current.setFullYear(y);
-          current.setMonth(m - 1);
-          current.setDate(d);
-      } else {
-          const [h, min] = value.split(':').map(Number);
-          current.setHours(h);
-          current.setMinutes(min);
-      }
-      setFormData({ ...formData, startTime: current.toISOString() });
+      // Preserve time from current, update date from new input
+      const newDate = new Date(date);
+      newDate.setHours(current.getHours(), current.getMinutes(), 0, 0);
+      
+      setFormData({ ...formData, startTime: newDate.toISOString() });
   };
+
+  const handleTimeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const [h, m] = e.target.value.split(':').map(Number);
+      const newDate = new Date(formData.startTime || new Date());
+      newDate.setHours(h);
+      newDate.setMinutes(m);
+      setFormData({ ...formData, startTime: newDate.toISOString() });
+  };
+
+  const getTimeValue = () => {
+      if (!formData.startTime) return '';
+      const d = new Date(formData.startTime);
+      return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+  }
 
   const toggleUser = (userId: string) => {
       const currentIds = formData.userIds || [];
@@ -293,16 +293,15 @@ const EventModal: React.FC<EventModalProps> = ({
       });
   };
 
-  const handleUntilChange = (dateStr: string) => {
-      if (!dateStr) {
-          // Empty string from date input means invalid or cleared.
-          updateRecurrence('until', ''); 
+  const handleUntilChange = (date: Date | null) => {
+      if (!date) {
+          updateRecurrence('until', '');
           return;
       }
-      // Construct Local Midnight Date -> ISO
-      const [y, m, d] = dateStr.split('-').map(Number);
-      const localDate = new Date(y, m - 1, d);
-      updateRecurrence('until', localDate.toISOString());
+      // Ensure until date is end of day or standard midnight? 
+      // Using standard local midnight to match logic
+      date.setHours(0,0,0,0);
+      updateRecurrence('until', date.toISOString());
   }
 
   const setUntilForever = () => {
@@ -334,44 +333,16 @@ const EventModal: React.FC<EventModalProps> = ({
     }
   };
 
-  // Time Input Logic
-  const currentTimeValue = getTimeInputValue(formData.startTime);
-  const isStandardTime = timeSlots.some(s => s.value === currentTimeValue);
-  const showManualInput = manualTimeMode || (!isStandardTime && currentTimeValue !== '');
-  
-  const toggleTimeMode = () => {
-      if (manualTimeMode) {
-          // Switching FROM Manual TO List
-          // Round to nearest 15 minutes
-          const date = new Date(formData.startTime || new Date());
-          const m = date.getMinutes();
-          const remainder = m % 15;
-          
-          if (remainder !== 0) {
-              const roundedM = Math.round(m / 15) * 15;
-              date.setMinutes(roundedM);
-              date.setSeconds(0);
-              setFormData({ ...formData, startTime: date.toISOString() });
-          }
-          setManualTimeMode(false);
-      } else {
-          setManualTimeMode(true);
-      }
-  };
-
   // Validation
   const hasTitle = !!formData.title?.trim();
   
   // Recurrence Validation
-  // If showing recurrence, 'until' must either be undefined (Forever) OR a valid date >= start
   let isRecurrenceValid = true;
   if (showRecurrence && formData.recurrence?.until) {
-      // If 'until' is an empty string (cleared by picker but not set to undefined), it's invalid
       if (formData.recurrence.until === '') {
           isRecurrenceValid = false;
       } else {
           const untilTime = new Date(formData.recurrence.until).getTime();
-          // Small buffer for same-day math
           const startTime = new Date(formData.startTime!).getTime() - 1000; 
           if (isNaN(untilTime) || untilTime < startTime) {
               isRecurrenceValid = false;
@@ -379,20 +350,29 @@ const EventModal: React.FC<EventModalProps> = ({
       }
   }
 
-  // If until is EXPLICITLY empty string (from input clear), it is invalid. 
-  // Undefined means "Forever" which is valid.
   if (showRecurrence && formData.recurrence?.until === '') {
       isRecurrenceValid = false;
   }
-
+  
+  // Dirty Check
+  // We create a temp object matching the structure of initialState to compare
+  const currentSnapshot = JSON.stringify({
+      ...formData,
+      userIds: [...(formData.userIds || [])].sort()
+  });
+  
+  // Check strict recurrence toggle state vs presence of recurrence data
+  const recurrenceStateChanged = !!event === false ? false : (showRecurrence !== !!event.rrule && !isComplexRule);
+  
+  const isDirty = !event || recurrenceStateChanged || currentSnapshot !== initialState;
   const isValid = hasTitle && isRecurrenceValid;
 
   // Display Helpers
-  const isRecurring = !!event?.recurrence || showRecurrence;
-  const displayDateLabel = isRecurring ? "Series Start Date" : "Date";
+  const isRecurring = !!event?.rrule || showRecurrence;
+  const displayDateLabel = isRecurring ? t('event_modal.series_start') : t('event_modal.date');
   
-  const instanceDateDisplay = (event && event.recurrence && initialDate) 
-    ? initialDate.toLocaleDateString('en-US', { weekday: 'short', month: 'long', day: 'numeric' })
+  const instanceDateDisplay = (event && event.rrule && initialDate) 
+    ? initialDate.toLocaleDateString(undefined, { weekday: 'short', month: 'long', day: 'numeric' })
     : null;
 
   return (
@@ -405,7 +385,7 @@ const EventModal: React.FC<EventModalProps> = ({
             {/* Header */}
             <div className="flex justify-between items-center p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 sticky top-0 z-10 shrink-0">
             <h2 className="text-lg font-bold text-gray-800 dark:text-white">
-                {event ? (isRecurring ? 'Edit Series' : 'Edit Event') : 'New Event'}
+                {event ? (isRecurring ? t('event_modal.edit_series') : t('event_modal.edit_event')) : t('event_modal.new_event')}
             </h2>
             <button onClick={onClose} className="p-2 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full text-gray-500 dark:text-gray-400">
                 <X size={20} />
@@ -413,15 +393,27 @@ const EventModal: React.FC<EventModalProps> = ({
             </div>
 
             {/* Recurrence Banner */}
-            {event && event.recurrence && (
+            {event && event.rrule && (
                 <div className="bg-blue-50 dark:bg-blue-900/30 px-4 py-2 flex flex-col gap-1 border-b border-blue-100 dark:border-blue-800">
                     <div className="flex items-start gap-2">
                         <RefreshCw size={14} className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
-                        <p className="text-xs text-blue-800 dark:text-blue-300 font-bold">Editing Series</p>
+                        <p className="text-xs text-blue-800 dark:text-blue-300 font-bold">{t('event_modal.editing_series')}</p>
                     </div>
                     <p className="text-[0.6rem] text-blue-700 dark:text-blue-400 leading-tight pl-6">
-                        Changes apply to all repeats. Use "Delete This Instance" to remove a single occurrence.
+                        {t('event_modal.editing_series_desc')}
                     </p>
+                </div>
+            )}
+
+            {/* Complex Rule Warning */}
+            {isComplexRule && (
+                <div className="bg-amber-50 dark:bg-amber-900/30 px-4 py-2 flex flex-col gap-1 border-b border-amber-100 dark:border-amber-800">
+                    <div className="flex items-start gap-2">
+                        <AlertCircle size={14} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                        <p className="text-[0.65rem] text-amber-800 dark:text-amber-300 font-bold leading-tight">
+                            {t('event_modal.complex_rule_warning')}
+                        </p>
+                    </div>
                 </div>
             )}
 
@@ -430,7 +422,7 @@ const EventModal: React.FC<EventModalProps> = ({
                 <div className="bg-gray-100 dark:bg-gray-700 px-4 py-2 flex items-center gap-2 border-b border-gray-200 dark:border-gray-600">
                     <Info size={14} className="text-gray-500 dark:text-gray-400" />
                     <p className="text-xs text-gray-600 dark:text-gray-300">
-                        Selected Instance: <span className="font-bold text-gray-800 dark:text-white">{instanceDateDisplay}</span>
+                        {t('event_modal.selected_instance')}: <span className="font-bold text-gray-800 dark:text-white">{instanceDateDisplay}</span>
                     </p>
                 </div>
             )}
@@ -447,78 +439,40 @@ const EventModal: React.FC<EventModalProps> = ({
                 value={formData.title || ''}
                 onChange={e => setFormData({...formData, title: e.target.value})}
                 className="w-full text-2xl font-bold border-b-2 border-gray-100 dark:border-gray-700 focus:border-blue-500 outline-none py-2 bg-transparent placeholder-gray-300 dark:placeholder-gray-600 transition-colors dark:text-white"
-                placeholder="Title..."
+                placeholder={t('event_modal.title')}
                 autoFocus
                 />
             </div>
 
             {/* Date & Time */}
             <div className="flex gap-4">
-                <div className="flex-1 relative group">
+                <div className="flex-1">
                     <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">{displayDateLabel}</label>
-                    
-                    {/* VISIBLE MASK */}
-                   <div className="bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center px-3 py-2 gap-2 h-10 border border-transparent group-hover:border-blue-300 dark:group-hover:border-blue-700 transition-colors">
-                        <CalIcon size={16} className="text-gray-500 dark:text-gray-400 shrink-0"/>
-                       <span className="text-sm font-medium text-gray-800 dark:text-white truncate">
-                            {getDisplayDate(formData.startTime)}
-                        </span>
+                    <div className="relative">
+                        <CalIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 pointer-events-none z-10" />
+                        <DatePicker 
+                            selected={formData.startTime ? new Date(formData.startTime) : null}
+                            onChange={handleDateChange}
+                            dateFormat={t('formats.date_picker')}
+                            className="w-full pl-10 pr-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg text-sm font-medium text-gray-800 dark:text-white border-transparent focus:border-blue-500 focus:ring-0 cursor-pointer"
+                            portalId="root"
+                            locale={currentUser.preferences?.language?.split('-')[0] || 'en'}
+                            showMonthDropdown
+                            showYearDropdown
+                            dropdownMode="select"
+                        />
                     </div>
-
-                    {/* INVISIBLE TRIGGER */}
-                    <input 
-                        type="date"
-                        name="eventStartDate"
-                        id="eventStartDate"
-                        value={getDateInputValue(formData.startTime)}
-                        onChange={(e) => { if(e.target.value) updateDateTime('date', e.target.value); }}
-                        onClick={(e) => e.currentTarget.showPicker()}
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 top-6"
-                    />
-                </div>                
+                </div>
+                
                 <div className={`w-5/12 transition-opacity duration-200 ${formData.isAllDay ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
-                     <div className="flex justify-between items-baseline mb-1">
-                        <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider block">Time</label>
-                        {!formData.isAllDay && (
-                            <button 
-                                onClick={toggleTimeMode}
-                                className="text-[0.625rem] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider hover:text-blue-800 flex items-center gap-1"
-                            >
-                                {showManualInput ? <List size={10} /> : <Keyboard size={10} />}
-                                {showManualInput ? 'List' : 'Type'}
-                            </button>
-                        )}
-                    </div>
-                    
-                    <div className="bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center px-3 py-2 gap-2 h-10 relative group">
-                        {showManualInput ? (
-                            <input 
-                                type="time"
-								name="eventTimeManual"
-                                value={currentTimeValue}
-                                onChange={(e) => updateDateTime('time', e.target.value)}
-                                className="bg-transparent border-none text-sm font-medium focus:ring-0 p-0 w-full outline-none [&::-webkit-calendar-picker-indicator]:hidden dark:text-white"
-                                autoFocus={manualTimeMode}
-                            />
-                        ) : (
-                            <select
-                                value={currentTimeValue}
-								name="eventTimeSelect"
-                                onChange={(e) => updateDateTime('time', e.target.value)}
-                                className="bg-transparent border-none text-sm font-medium focus:ring-0 p-0 w-full outline-none appearance-none truncate dark:text-white"
-                            >
-                                {timeSlots.map(s => (
-                                    <option key={s.value} value={s.value}>{s.label}</option>
-                                ))}
-                            </select>
-                        )}
-                        {!showManualInput && (
-                            <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none opacity-50 dark:text-gray-400">
-                                <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                    <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                                </svg>
-                            </div>
-                        )}
+                    <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t('event_modal.time')}</label>
+                    <div className="relative">
+                         <input
+                            type="time"
+                            value={getTimeValue()}
+                            onChange={handleTimeChange}
+                            className="w-full px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg text-sm font-medium text-gray-800 dark:text-white border-transparent focus:border-blue-500 focus:ring-0 outline-none"
+                         />
                     </div>
                 </div>
             </div>
@@ -535,21 +489,23 @@ const EventModal: React.FC<EventModalProps> = ({
                         onChange={(e) => setFormData({...formData, isAllDay: e.target.checked})}
                         className="hidden"
                      />
-                     <span className="text-sm font-bold text-gray-700 dark:text-gray-200">All Day</span>
+                     <span className="text-sm font-bold text-gray-700 dark:text-gray-200">{t('event_modal.all_day')}</span>
                  </label>
             </div>
 
             {/* Recurrence Options */}
             <div>
-                 <button 
-                    type="button" 
-                    onClick={handleRecurrenceToggle}
-                    className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider mb-2 ${showRecurrence ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}
-                 >
-                     <Repeat size={14} /> {showRecurrence ? 'Remove recurrence' : 'Set up repeat'}
-                 </button>
+                 {!isComplexRule && (
+                     <button 
+                        type="button" 
+                        onClick={handleRecurrenceToggle}
+                        className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider mb-2 ${showRecurrence ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}
+                     >
+                         <Repeat size={14} /> {showRecurrence ? t('event_modal.remove_repeat') : t('event_modal.repeat')}
+                     </button>
+                 )}
 
-                 {showRecurrence && (
+                 {showRecurrence && !isComplexRule && (
                      <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3 border border-gray-100 dark:border-gray-700 space-y-3 animate-in slide-in-from-top-2">
                         <div className="flex gap-2">
                              {(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'] as RecurrenceFreq[]).map(freq => (
@@ -562,59 +518,54 @@ const EventModal: React.FC<EventModalProps> = ({
                                         ${formData.recurrence?.freq === freq ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800' : 'bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-600 hover:border-gray-300'}
                                     `}
                                  >
-                                     {freq}
+                                     {t(`recurrence.${freq.toLowerCase()}`)}
                                  </button>
                              ))}
                         </div>
                         <div className="flex flex-col gap-1">
                              <div className="flex justify-between items-baseline">
-                                <label className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">Until:</label>
+                                <label className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">{t('event_modal.until')}</label>
                                 {!isRecurrenceValid && (
                                     <span className="text-[0.6rem] text-red-500 font-bold flex items-center gap-1">
-                                        <AlertCircle size={10} /> Invalid Date
+                                        <AlertCircle size={10} /> {t('event_modal.invalid_date')}
                                     </span>
                                 )}
                              </div>
                              
-                             <div className="flex gap-2 relative group">
-                                {/* VISIBLE MASK */}
-                                <div className={`flex-1 flex items-center gap-2 bg-white dark:bg-gray-800 border rounded px-2 py-1 text-xs dark:text-white h-full ${!isRecurrenceValid ? 'border-red-300 ring-1 ring-red-100' : 'border-gray-200 dark:border-gray-600 group-hover:border-blue-300'}`}>
-                                    <span className={`truncate ${!formData.recurrence?.until ? 'text-gray-400 italic' : ''}`}>
-                                         {formData.recurrence?.until 
-                                            ? new Date(formData.recurrence.until).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) 
-                                            : 'Select End Date...'}
-                                    </span>
+                             <div className="flex gap-2 relative">
+                                <div className="flex-1 relative">
+                                    <DatePicker 
+                                        selected={formData.recurrence?.until ? new Date(formData.recurrence.until) : null}
+                                        onChange={handleUntilChange}
+                                        placeholderText={t('event_modal.select_end_date')}
+                                        minDate={formData.startTime ? new Date(formData.startTime) : undefined}
+                                        className={`w-full bg-white dark:bg-gray-800 border rounded px-2 py-1 text-xs dark:text-white outline-none cursor-pointer ${!isRecurrenceValid ? 'border-red-300 ring-1 ring-red-100' : 'border-gray-200 dark:border-gray-600 focus:border-blue-300'}`}
+                                        portalId="root"
+                                        locale={currentUser.preferences?.language?.split('-')[0] || 'en'}
+                                        showMonthDropdown
+                                        showYearDropdown
+                                        dropdownMode="select"
+                                    />
                                 </div>
-
-                                {/* INVISIBLE TRIGGER */}
-                                <input 
-                                    type="date"
-									name="recurrenceUntil"
-                                    min={getDateInputValue(formData.startTime)}
-                                    value={formData.recurrence?.until ? getDateInputValue(formData.recurrence.until) : ''}
-                                    onChange={(e) => handleUntilChange(e.target.value)}
-                                    onClick={(e) => e.currentTarget.showPicker()}
-                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                />
                                 <button
                                     type="button"
                                     onClick={setUntilToday}
-                                    className="px-2 border rounded bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-600 text-xs font-bold text-gray-500 dark:text-gray-400 hover:text-blue-600 hover:border-blue-200 z-20"
-                                    title="Set Until Today"
+                                    className="px-2 border rounded bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-600 text-xs font-bold text-gray-500 dark:text-gray-400 hover:text-blue-600 hover:border-blue-200"
+                                    title={t('event_modal.today')}
                                 >
-                                    Today
+                                    {t('event_modal.today')}
                                 </button>
                                 <button 
                                     type="button"
                                     onClick={setUntilForever}
                                     title="Repeat Forever"
-                                    className={`px-3 border rounded transition-colors z-20 ${!formData.recurrence?.until ? 'bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-800 text-blue-600 dark:text-blue-400' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-600 text-gray-400 hover:text-gray-600'}`}
+                                    className={`px-3 border rounded transition-colors ${!formData.recurrence?.until ? 'bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-800 text-blue-600 dark:text-blue-400' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-600 text-gray-400 hover:text-gray-600'}`}
                                 >
                                     <InfinityIcon size={16} />
                                 </button>
                              </div>
                              <p className="text-[0.6rem] text-gray-400 italic text-right">
-                                 {formData.recurrence?.until ? 'Ends on this date (inclusive)' : 'Repeats forever'}
+                                 {formData.recurrence?.until ? t('event_modal.ends_on') : t('event_modal.repeats_forever')}
                              </p>
                         </div>
                      </div>
@@ -624,7 +575,7 @@ const EventModal: React.FC<EventModalProps> = ({
                  {showRecurrence && sortedExdates.length > 0 && (
                      <div className="mt-3 bg-red-50 dark:bg-red-900/20 rounded-lg p-3 border border-red-100 dark:border-red-800 animate-in slide-in-from-top-2">
                          <div className="text-[0.6rem] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                             <Trash2 size={10} /> Restorable Instances
+                             <Trash2 size={10} /> {t('event_modal.restorable')}
                          </div>
                          <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto custom-scrollbar pr-1">
                              {sortedExdates.map(dateStr => {
@@ -634,13 +585,13 @@ const EventModal: React.FC<EventModalProps> = ({
                                      <div key={dateStr} className="flex items-center justify-between bg-white dark:bg-gray-800 border border-red-100 dark:border-red-900 px-2 py-1.5 rounded">
                                          <div className="flex items-center gap-2">
                                             <span className="text-xs font-bold text-gray-700 dark:text-gray-200">{localDate.toLocaleDateString()}</span>
-                                            <span className="text-[0.6rem] text-gray-400">{localDate.toLocaleDateString('en-US', { weekday: 'short' })}</span>
+                                            <span className="text-[0.6rem] text-gray-400">{localDate.toLocaleDateString(undefined, { weekday: 'short' })}</span>
                                          </div>
                                          <button 
                                             onClick={() => handleRestoreInstance(dateStr)}
                                             className="text-[0.6rem] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
                                          >
-                                             <Undo size={10} /> Restore
+                                             <Undo size={10} /> {t('event_modal.restore')}
                                          </button>
                                      </div>
                                  )
@@ -652,13 +603,13 @@ const EventModal: React.FC<EventModalProps> = ({
 
             {/* Description */}
             <div>
-                 <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Description</label>
+                 <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t('event_modal.description')}</label>
                  <textarea 
                     name="eventDescription"
                     id="eventDescription"
                     value={formData.description || ''}
                     onChange={(e) => setFormData({...formData, description: e.target.value})}
-                    placeholder="Details, location, notes..."
+                    placeholder={t('event_modal.description_placeholder')}
                     rows={2}
                     className="w-full bg-gray-50 dark:bg-gray-700 rounded-lg p-3 text-sm focus:bg-white dark:focus:bg-gray-600 focus:ring-2 focus:ring-blue-100 dark:focus:ring-blue-900 outline-none resize-none dark:text-white dark:placeholder-gray-500"
                  />
@@ -666,7 +617,7 @@ const EventModal: React.FC<EventModalProps> = ({
 
             {/* User Assignment */}
             <div>
-                 <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-2 block">Participants</label>
+                 <label className="text-[0.625rem] font-bold text-gray-400 uppercase tracking-wider mb-2 block">{t('event_modal.participants')}</label>
                  <div className="flex gap-2 overflow-x-auto pb-2 custom-scrollbar">
                      {users.map(u => {
                          const isSelected = formData.userIds?.includes(u.id);
@@ -694,15 +645,15 @@ const EventModal: React.FC<EventModalProps> = ({
                  {deleteStage === 'SERIES_CHOICE' ? (
                     <div className="flex flex-col gap-2 w-full animate-in slide-in-from-left-2">
                         <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-gray-500 dark:text-gray-400">Delete Options</span>
-                            <button onClick={handleCancelDelete} className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">Cancel</button>
+                            <span className="text-xs font-bold text-gray-500 dark:text-gray-400">{t('event_modal.delete_options')}</span>
+                            <button onClick={handleCancelDelete} className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">{t('event_modal.cancel')}</button>
                         </div>
                         <div className="flex gap-2">
                             <button onClick={handleDeleteInstance} className="flex-1 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg text-xs font-bold text-gray-700 dark:text-gray-300 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 dark:hover:text-red-400 hover:border-red-200 dark:hover:border-red-800 transition-colors">
-                                This Instance
+                                {t('event_modal.this_instance')}
                             </button>
                             <button onClick={handleConfirmDeleteSeries} className="flex-1 py-2 bg-red-600 rounded-lg text-xs font-bold text-white hover:bg-red-700 shadow-sm transition-colors">
-                                Entire Series
+                                {t('event_modal.entire_series')}
                             </button>
                         </div>
                     </div>
@@ -718,10 +669,10 @@ const EventModal: React.FC<EventModalProps> = ({
                         )}
                         <button 
                             onClick={handleSave}
-                            disabled={!isValid}
-                            className="flex-1 bg-blue-600 text-white rounded-xl font-bold text-sm shadow-lg shadow-blue-200 dark:shadow-blue-900/20 hover:bg-blue-700 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-2"
+                            disabled={!isValid || !isDirty}
+                            className="flex-1 bg-blue-600 text-white rounded-xl font-bold text-sm shadow-lg shadow-blue-200 dark:shadow-blue-900/20 hover:bg-blue-700 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:scale-100 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                         >
-                            <Save size={18} /> Save Event
+                            <Save size={18} /> {t('event_modal.save')}
                         </button>
                      </>
                  )}

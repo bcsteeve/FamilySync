@@ -28,6 +28,58 @@
   background: #6b7280; 
 }
 
+/* React Datepicker Overrides for Tailwind/Dark Mode */
+.react-datepicker {
+  @apply !font-sans !bg-white dark:!bg-gray-800 !border-gray-200 dark:!border-gray-700 !rounded-xl !shadow-2xl !text-gray-800 dark:!text-gray-100;
+}
+.react-datepicker__header {
+  @apply !bg-gray-50 dark:!bg-gray-900 !border-gray-200 dark:!border-gray-700 !rounded-t-xl;
+}
+.react-datepicker__current-month, .react-datepicker-time__header, .react-datepicker-year-header {
+  @apply !text-gray-800 dark:!text-gray-100 !font-bold;
+}
+.react-datepicker__day-name {
+  @apply !text-gray-400 dark:!text-gray-500 !font-bold !uppercase !text-[0.6rem];
+}
+.react-datepicker__day {
+  @apply !text-gray-700 dark:!text-gray-300 hover:!bg-gray-100 dark:hover:!bg-gray-700 !rounded-lg;
+}
+.react-datepicker__day--selected, .react-datepicker__day--keyboard-selected {
+  @apply !bg-blue-600 !text-white hover:!bg-blue-700 !font-bold;
+}
+.react-datepicker__day--outside-month {
+  @apply !text-gray-300 dark:!text-gray-600;
+}
+.react-datepicker__day--disabled {
+  @apply !opacity-30 hover:!bg-transparent cursor-not-allowed;
+}
+.react-datepicker__time-container {
+  @apply !border-l-gray-200 dark:!border-l-gray-700 !w-24;
+}
+.react-datepicker__time-list {
+  @apply !bg-white dark:!bg-gray-800;
+}
+.react-datepicker__time-list-item {
+  @apply !text-gray-700 dark:!text-gray-300 hover:!bg-gray-100 dark:hover:!bg-gray-700 !h-auto !py-2 !px-1 !flex !items-center !justify-center !text-xs;
+}
+.react-datepicker__time-list-item--selected {
+  @apply !bg-blue-600 !text-white hover:!bg-blue-700 !font-bold;
+}
+.react-datepicker-popper {
+  @apply !z-[110]; /* Above all modals (highest modal is z-100) */
+}
+.react-datepicker__input-container input {
+  @apply !outline-none !bg-transparent;
+}
+
+/* Dropdown Selects for Year/Month Navigation */
+.react-datepicker__header select {
+  @apply !bg-gray-100 dark:!bg-gray-800 !text-gray-700 dark:!text-gray-200 !border-none !rounded !p-1 !mx-1 !outline-none !text-xs !font-bold !cursor-pointer hover:!bg-gray-200 dark:hover:!bg-gray-700;
+}
+.react-datepicker__year-dropdown, .react-datepicker__month-dropdown, .react-datepicker__month-year-dropdown {
+  @apply !bg-white dark:!bg-gray-800 !border-gray-200 dark:!border-gray-700;
+}
+
 body {
   -webkit-tap-highlight-color: transparent;
 }

@@ -10,8 +10,6 @@ export const toLocalDateString = (date: Date): string => {
     return `${y}-${m}-${d}`;
 };
 
-export const DAYS_OF_WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
 // Tableau 10
 export const PALETTE_STANDARD = [
   '#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F', 

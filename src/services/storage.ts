@@ -1,6 +1,7 @@
 import { pb } from './pb';
 import { CalendarEvent, ShoppingItem, TodoItem, User, SystemSettings, ShoppingStore, ShoppingCategory } from '../types';
 import { DEFAULT_SETTINGS, PaletteKey } from '../constants';
+import { createRRule } from './recurrence';
 
 class StorageService {
   public get pb() { return pb; }
@@ -141,20 +142,30 @@ async updateUserPassword(userId: string, newPass: string, oldPass?: string): Pro
   }
 
   async saveUsers(users: User[]): Promise<void> {
+    // 1. Fetch existing users to detect deletions
+    const existingUsers = await this.getUsers();
+    const newIds = new Set(users.map(u => u.id));
+
+    // 2. Delete users missing from the new list
+    for (const existing of existingUsers) {
+        if (!newIds.has(existing.id)) {
+            try {
+                await pb.collection('users').delete(existing.id);
+            } catch (e) {
+                console.error(`Failed to delete user ${existing.id}`, e);
+            }
+        }
+    }
+
+    // 3. Update/Create remaining users
     for (const u of users) {
         try {
             // MAP UPDATE:
             // We map u.avatar (Frontend Emoji) -> DB 'emoji'
-            // We do NOT map u.photoUrl here because file uploads require FormData, 
-            // and this function receives a string URL. File uploads are handled separately 
-            // (or would need to be if implemented in Settings).
-            
             await pb.collection('users').update(u.id, {
                 name: u.username,
                 colorIndex: u.colorIndex,
-                
                 emoji: u.avatar, // Save text emoji
-                
                 fontSizeScale: u.fontSizeScale,
                 preferences: u.preferences,
                 isAdmin: u.isAdmin
@@ -186,30 +197,46 @@ async updateUserPassword(userId: string, newPass: string, oldPass?: string): Pro
           oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
           const dateStr = oneYearAgo.toISOString();
 
+          // We fetch events that have an RRULE (recurring) OR are in the future/recent past
           const records = await pb.collection('events').getFullList({ 
               sort: '-startTime',
-              filter: `recurrence != null || startTime >= "${dateStr}"`
+              filter: `rrule != "" || startTime >= "${dateStr}"`
           });
 
-          return records.map((r: any) => ({
-              id: r.id,
-              title: r.title,
-              description: r.description,
-              startTime: r.startTime,
-              endTime: r.endTime,
-              isAllDay: r.isAllDay,
-              userIds: r.participants || [], 
-              recurrence: r.recurrence,
-              exdates: r.exdates
-          }));
+          return records.map((r: any) => {
+              // MIGRATION ON READ: Convert Legacy JSON to RRULE
+              let effectiveRRule = r.rrule;
+              if (!effectiveRRule && r.recurrence && r.recurrence.freq) {
+                  effectiveRRule = createRRule(
+                      r.recurrence.freq, 
+                      new Date(r.startTime), 
+                      r.recurrence.until ? new Date(r.recurrence.until) : undefined
+                  );
+              }
+
+              return {
+                  id: r.id,
+                  title: r.title,
+                  description: r.description,
+                  startTime: r.startTime,
+                  endTime: r.endTime,
+                  isAllDay: r.isAllDay,
+                  userIds: r.participants || [], 
+                  rrule: effectiveRRule, // Use the new string field
+                  icalUID: r.icalUID,
+                  exdates: r.exdates
+              };
+          });
       } catch (e) { return []; }
   }
 
 	createEvent = async (event: CalendarEvent): Promise<CalendarEvent> => {
 		const { id, ...payload } = event;
+        // Strip legacy recurrence field if present to keep DB clean
+        const { recurrence, ...cleanPayload } = payload as any;
 
 		const record = await pb.collection('events').create({
-			...payload,
+			...cleanPayload,
 			participants: event.userIds
 		});
 		
@@ -217,8 +244,9 @@ async updateUserPassword(userId: string, newPass: string, oldPass?: string): Pro
 	}
 
   updateEvent = async (event: CalendarEvent): Promise<void> => {
+      const { recurrence, ...cleanPayload } = event as any;
       await pb.collection('events').update(event.id, {
-          ...event,
+          ...cleanPayload,
           participants: event.userIds
       });
   }
@@ -241,7 +269,7 @@ async updateUserPassword(userId: string, newPass: string, oldPass?: string): Pro
             addedAt: r.created,
             seenByUserIds: r.seenBy || [],
             priority: r.priority, 
-            userPriorities: { [r.addedBy]: r.priority },
+            order: r.order,
 			userCategoryIds: r.userCategoryIds || {},
             creatorCategoryId: r.category,
             logs: [] 
@@ -249,7 +277,7 @@ async updateUserPassword(userId: string, newPass: string, oldPass?: string): Pro
       } catch (e) { return []; }
   }
 
-  createShoppingItem = async (item: ShoppingItem): Promise<ShoppingItem> => {
+createShoppingItem = async (item: ShoppingItem): Promise<ShoppingItem> => {
       const record = await pb.collection('shopping_items').create({
           content: item.content,
           note: item.note,
@@ -257,9 +285,11 @@ async updateUserPassword(userId: string, newPass: string, oldPass?: string): Pro
           isPrivate: item.isPrivate,
           addedBy: item.addedByUserId,
           seenBy: item.seenByUserIds,
-          priority: 'NORMAL', 
+          priority: item.priority || 'NORMAL',
+          order: item.order,
           category: item.creatorCategoryId,
-		  userCategoryIds: item.userCategoryIds
+		  userCategoryIds: item.userCategoryIds,
+          logs: item.logs
       });
       return { ...item, id: record.id };
   }
@@ -271,12 +301,13 @@ async updateUserPassword(userId: string, newPass: string, oldPass?: string): Pro
           isInCart: item.isInCart,
           isPrivate: item.isPrivate,
           seenBy: item.seenByUserIds,
-          priority: item.userPriorities?.[item.addedByUserId] || 'NORMAL',
+          priority: item.priority || 'NORMAL',
+          order: item.order,
           category: item.creatorCategoryId,
-		  userCategoryIds: item.userCategoryIds
+		  userCategoryIds: item.userCategoryIds,
+          logs: item.logs
       });
   }
-
   deleteShoppingItem = async (id: string): Promise<void> => {
       await pb.collection('shopping_items').delete(id);
   }

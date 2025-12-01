@@ -5,6 +5,7 @@ export interface UserPreferences {
   showMoonPhases: boolean;
   showHolidays: boolean;
   theme: 'LIGHT' | 'DARK';
+  language?: string;
 }
 
 export interface User {
@@ -18,13 +19,6 @@ export interface User {
   preferences?: UserPreferences;
 }
 
-export type RecurrenceFreq = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY';
-
-export interface RecurrenceRule {
-  freq: RecurrenceFreq;
-  until?: string; // ISO String for end date
-}
-
 export interface CalendarEvent {
   id: string;
   title: string;
@@ -33,7 +27,8 @@ export interface CalendarEvent {
   endTime?: string; // ISO String
   isAllDay?: boolean;
   userIds: string[];
-  recurrence?: RecurrenceRule; 
+  rrule?: string; // Standard iCal Recurrence Rule (e.g. "FREQ=WEEKLY;BYDAY=TU")
+  icalUID?: string; // External Unique ID for import/export deduplication
   exdates?: string[]; // Array of ISO Date strings (YYYY-MM-DD) to skip
 }
 
@@ -84,8 +79,10 @@ export interface ShoppingItem {
   
   // Per-User State maps (UserId -> Value)
   userCategoryIds?: Record<string, string>; 
-  userPriorities?: Record<string, PriorityLevel>;
   
+  // Global State
+  order: number;
+
   // New Item Tracking
   seenByUserIds?: string[]; 
   
@@ -97,7 +94,7 @@ export interface ShoppingItem {
   completedAt?: string; // ISO String
   logs?: ShoppingLogEntry[];
 
-  // Legacy fields (kept for type compatibility during migration logic, though unused after)
+  // Legacy fields
   categoryId?: string; 
   priority?: PriorityLevel;
 }
