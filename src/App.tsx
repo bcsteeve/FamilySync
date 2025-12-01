@@ -5,7 +5,7 @@ import Calendar from './components/Calendar';
 import Lists from './components/Lists';
 import Settings from './components/Settings';
 import EventModal from './components/EventModal';
-import { Calendar as CalIcon, List as ListIcon, LogOut, Plus, Search, Undo, Redo, Loader2, Columns, Lock, User as UserIcon, AlertCircle, Shield, Globe } from 'lucide-react';
+import { Calendar as CalIcon, List as ListIcon, LogOut, Plus, Search, Undo, Redo, Loader2, Columns, Lock, User as UserIcon, AlertCircle, Shield, Globe, Wifi, WifiOff } from 'lucide-react';
 import { fetchWeather, WeatherData, fetchHolidays } from './services/integrations';
 import { storage } from './services/storage';
 import { pb } from './services/pb'; // Direct PB access for subscriptions
@@ -63,6 +63,7 @@ const App: React.FC = () => {
   // --- UI State ---
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [globalToast, setGlobalToast] = useState<{ msg: string, type: 'info' | 'success' } | null>(null);
+  const [isServerLive, setIsServerLive] = useState(true);
   
   // Ref for Realtime Callbacks (Prevents connection cycling)
   const currentUserRef = useRef<User | null>(null);
@@ -225,6 +226,47 @@ const App: React.FC = () => {
           pb.collection('events').unsubscribe();
       };
   }, [isLoaded, currentUserId]); // Depend on ID, not User Object, to stay stable
+
+  // --- SERVER HEARTBEAT (Smart) ---
+  useEffect(() => {
+      let timer: any;
+
+      const checkHealth = async () => {
+          // Optimization: Don't waste data if the user isn't looking
+          if (document.visibilityState === 'hidden') return;
+
+          try {
+              await pb.health.check();
+              if (!isServerLive) setIsServerLive(true);
+          } catch {
+              if (isServerLive) setIsServerLive(false);
+          }
+      };
+
+      // 1. Run regularly while active
+      checkHealth();
+      timer = setInterval(checkHealth, 10000);
+
+      // 2. React to Visibility Changes (Pause in background, resume immediately on foreground)
+      const handleVisibility = () => {
+          if (document.visibilityState === 'visible') {
+              checkHealth(); // Check immediately when they come back
+              // Ensure timer is running
+              clearInterval(timer);
+              timer = setInterval(checkHealth, 10000);
+          } else {
+              // Stop polling to save data/battery
+              clearInterval(timer);
+          }
+      };
+
+      document.addEventListener('visibilitychange', handleVisibility);
+
+      return () => {
+          clearInterval(timer);
+          document.removeEventListener('visibilitychange', handleVisibility);
+      };
+  }, [isServerLive]);
 
   // --- SINGLE BOOTSTRAP EFFECT ---
   useEffect(() => {
