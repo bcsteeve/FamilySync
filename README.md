@@ -45,4 +45,7 @@ services:
       - TZ=America/Vancouver
 ```
 
-### 2. That's it!  If you don't know how to do step 1 (ie. you aren't familiar with Docker and Docker Compose), then I'm afraid you need to Google for a bit.
+### 2. Open your browser and go to http://[your-ip-address]:8090
+Create an initial user/password, then start poking around!  Additional users and other fun stuff located in Settings.
+
+### 3. That's it!  If you don't know how to do step 1 (ie. you aren't familiar with Docker and Docker Compose), then I'm afraid you need to Google for a bit.
