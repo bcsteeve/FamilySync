@@ -1,8 +1,12 @@
 # FamilySync
 
+## ALPHA STATUS!!  Please note that this project was developed for my PERSONAL use and likely has a ton of bugs and/or may not fit YOUR use case.
+
 ![Version](https://img.shields.io/badge/version-0.1.0-blue) ![Docker](https://img.shields.io/badge/docker-ready-blue)
 
-**FamilySync** is a self-hosted, offline-capable family dashboard designed to replace the magnet-covered fridge whiteboard. It combines a shared calendar, smart shopping lists, and to-do lists into a single, data-dense interface that works beautifully on mobile devices.
+**FamilySync** is a self-hosted family dashboard designed to replace the magnet-covered fridge whiteboard. It combines a shared calendar and shopping/to-do lists. 
+It is NOT intended to be everything for everyone.  I just couldn't find a FREE calendar/list app that did what I wanted, so I made this for my family and I
+share it with yours.  No warrantee or promise included.
 
 Built with **React 19**, **Tailwind CSS v4**, and **PocketBase**.
 
@@ -39,3 +43,5 @@ services:
     environment:
       # Set your timezone
       - TZ=America/Vancouver
+
+### 2. That's it!  If you don't know how to do step 1 (ie. you aren't familiar with Docker and Docker Compose), then I'm afraid you need to Google for a bit.
