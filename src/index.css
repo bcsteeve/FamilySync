@@ -1,6 +1,19 @@
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
+/* BROWSER COMPLIANCE PATCH: Explicitly set standard properties to silence warnings */
+html {
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Ensure form elements use standard appearance */
+button, input, optgroup, select, textarea {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+}
+
 /* Custom scrollbar for "data-dense" feel */
 ::-webkit-scrollbar {
   width: 6px;

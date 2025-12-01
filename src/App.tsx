@@ -827,6 +827,8 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
 
                 {/* 2. FUNCTIONAL LAYER */}
                 <select
+                    id="languageSelector"
+                    name="languageSelector"
                     value={i18n.language}
                     onChange={(e) => {
                         // 1. Update i18n immediately

@@ -1200,6 +1200,8 @@ const addUser = async () => {
                         <div className="flex gap-2">
                             <div className="relative group flex-1">
                                 <DatePicker 
+                                    id="pruneDate"
+                                    name="pruneDate"
                                     selected={pruneDate ? new Date(pruneDate) : null}
                                     onChange={(date: Date) => setPruneDate(date ? date.toISOString() : '')}
                                     placeholderText={t('settings.select_threshold')}

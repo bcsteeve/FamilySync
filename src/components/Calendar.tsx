@@ -725,6 +725,8 @@ const Calendar: React.FC<CalendarProps> = ({
                             className="font-bold text-gray-800 dark:text-gray-100 text-lg select-none hover:text-blue-600 dark:hover:text-blue-400 transition-colors bg-transparent border-none outline-none cursor-pointer w-40"
                             portalId="root"
                             locale={currentUser.preferences?.language?.split('-')[0] || 'en'}
+                            name="calendarMonthPicker"
+                            id="calendarMonthPicker"
                         />
                         <ChevronDown size={16} className="text-gray-400 dark:text-gray-500 pointer-events-none absolute right-0" />
                      </div>
