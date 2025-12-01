@@ -939,12 +939,12 @@ const addUser = async () => {
                                 value={newCatName} 
                                 onChange={e => setNewCatName(e.target.value)} 
                                 onKeyDown={e => e.key === 'Enter' && addCategory()} 
-                                className={`flex-1 text-sm border dark:border-gray-600 rounded px-2 py-1 outline-none focus:border-blue-500 bg-white dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 ${validationError?.id === 'new-cat' ? 'border-red-500 animate-shake' : ''}`}
+                                className={`flex-1 min-w-0 text-sm border dark:border-gray-600 rounded px-2 py-1 outline-none focus:border-blue-500 bg-white dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 ${validationError?.id === 'new-cat' ? 'border-red-500 animate-shake' : ''}`}
                              />
-                             <select name="newCatStoreSelect" value={newCatStoreId} onChange={e => setNewCatStoreId(e.target.value)} className="text-sm border dark:border-gray-600 rounded px-2 py-1 outline-none max-w-[120px] bg-white dark:bg-gray-700 dark:text-white">
+                             <select name="newCatStoreSelect" value={newCatStoreId} onChange={e => setNewCatStoreId(e.target.value)} className="text-sm border dark:border-gray-600 rounded px-2 py-1 outline-none max-w-[100px] sm:max-w-[120px] bg-white dark:bg-gray-700 dark:text-white truncate">
                                  {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                              </select>
-                             <button onClick={addCategory} disabled={!newCatName} className="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 p-1.5 rounded hover:bg-blue-100 dark:hover:bg-blue-900 disabled:opacity-50"><Plus size={16}/></button>
+                             <button onClick={addCategory} disabled={!newCatName} className="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 p-1.5 rounded hover:bg-blue-100 dark:hover:bg-blue-900 disabled:opacity-50 shrink-0"><Plus size={16}/></button>
                              {validationError?.id === 'new-cat' && (
                                 <div className="absolute top-full left-0 mt-1 text-[0.6rem] text-red-500 font-bold flex items-center gap-1 bg-red-50 px-2 py-0.5 rounded shadow-sm z-10">
                                     <AlertTriangle size={8} /> {validationError.msg}
