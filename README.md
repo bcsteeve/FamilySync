@@ -42,6 +42,6 @@ services:
       - ./pb_data:/pb/pb_data
     environment:
       # Set your timezone
-      - TZ=America/Vancouver
+      - TZ=America/Vancouver```
 
 ### 2. That's it!  If you don't know how to do step 1 (ie. you aren't familiar with Docker and Docker Compose), then I'm afraid you need to Google for a bit.
