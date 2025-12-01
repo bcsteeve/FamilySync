@@ -2,7 +2,7 @@
 @config "../tailwind.config.js";
 
 /* BROWSER COMPLIANCE PATCH: Explicitly set standard properties to silence warnings */
-html {
+html, :host {
   text-size-adjust: 100%;
   -webkit-text-size-adjust: 100%;
 }
@@ -12,6 +12,13 @@ button, input, optgroup, select, textarea {
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
+}
+
+/* Specific patch for React Datepicker time input warning */
+.react-datepicker__input-time-container .react-datepicker-time__input-container .react-datepicker-time__input input[type=time] {
+    appearance: textfield;
+    -webkit-appearance: textfield;
+    -moz-appearance: textfield;
 }
 
 /* Custom scrollbar for "data-dense" feel */
