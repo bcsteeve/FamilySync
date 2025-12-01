@@ -840,7 +840,8 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
     <UserContext.Provider value={{ users, currentUser, updateUsers }}>
       <ThemeContext.Provider value={{ paletteKey, activePalette, updatePaletteKey, getUserColor }}>
         
-        <div className="h-full flex flex-col bg-gray-100 dark:bg-gray-900 relative">
+        {/* FIX: Use h-dvh (Dynamic Viewport Height) to respect mobile browser bars */}
+        <div className="h-dvh w-full flex flex-col bg-gray-100 dark:bg-gray-900 relative overflow-hidden">
           {/* Top Bar */}
           <div className="h-14 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700 flex items-center px-4 justify-between shrink-0 z-20">
             <div className="flex items-center gap-2">

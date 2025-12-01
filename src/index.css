@@ -5,6 +5,17 @@
 html, :host {
   text-size-adjust: 100%;
   -webkit-text-size-adjust: 100%;
+  height: 100%;
+  overflow: hidden; /* CRITICAL: Prevent body scroll so the App container controls the view */
+}
+
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
 }
 
 /* Ensure form elements use standard appearance */
