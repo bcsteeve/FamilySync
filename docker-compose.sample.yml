@@ -1,0 +1,11 @@
+services:
+  familysync:
+    image: ghcr.io/bcsteeve/familysync:latest
+    container_name: familysync
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./pb_data:/pb/pb_data
+    environment:
+      - TZ=America/Vancouver

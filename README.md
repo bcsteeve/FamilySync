@@ -1,17 +1,41 @@
 # FamilySync
 
-A self-hosted, offline-capable family dashboard built with React, PocketBase, and Docker.
+![Version](https://img.shields.io/badge/version-0.1.0-blue) ![Docker](https://img.shields.io/badge/docker-ready-blue)
 
-## Features
-- **Calendar:** Shared family events with recurrence and sync.
-- **Shopping List:** Live-updating grocery lists with "Smart Sorting" by store.
-- **To-Do:** Shared tasks and reminders.
-- **Self-Hosted:** Data never leaves your network. 
-- **Mobile First:** Designed to look and feel like a native app on iOS/Android.
+**FamilySync** is a self-hosted, offline-capable family dashboard designed to replace the magnet-covered fridge whiteboard. It combines a shared calendar, smart shopping lists, and to-do lists into a single, data-dense interface that works beautifully on mobile devices.
 
-## Quick Start (Docker)
+Built with **React 19**, **Tailwind CSS v4**, and **PocketBase**.
 
-1. **Prerequisites:** ensure you have Docker and Docker Compose installed.
-2. **Run:**
-   ```bash
-   docker compose up -d
+## ✨ Features
+
+* **📅 Shared Calendar:** Support for recurring events, drag-and-drop rescheduling, and import/export (.ics).
+* **🛒 Smart Shopping:** Items are automatically categorized by store. Drag items to reorder or move them between categories.
+* **✅ To-Do Lists:** Shared tasks with priority levels and deadlines.
+* **⏪ Time Travel:** Full **Undo/Redo** support for every action in the current session.
+* **👥 Multi-User:** Color-coded avatars for every family member. See who added an item and who bought it.
+* **🌓 Dark Mode:** Automatic or manual theme switching.
+* **📱 Mobile First:** Installable as a PWA (Progressive Web App) on iOS and Android.
+
+---
+
+## 🚀 Getting Started (For Users / NAS)
+
+If you just want to run the app on your Home Server (Synology, Unraid, Raspberry Pi), use this method. You do **not** need to download the source code.
+
+### 1. Create a `docker-compose.yml`
+Create a folder on your server (e.g., `familysync`) and create a file named `docker-compose.yml` with the following content:
+
+```yaml
+services:
+  familysync:
+    image: ghcr.io/bcsteeve/familysync:latest
+    container_name: familysync
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      # This folder stores your database and uploaded avatars
+      - ./pb_data:/pb/pb_data
+    environment:
+      # Set your timezone
+      - TZ=America/Vancouver
