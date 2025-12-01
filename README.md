@@ -6,7 +6,7 @@
 
 **FamilySync** is a self-hosted family dashboard designed to replace the magnet-covered fridge whiteboard. It combines a shared calendar and shopping/to-do lists. 
 It is NOT intended to be everything for everyone.  I just couldn't find a FREE calendar/list app that did what I wanted, so I made this for my family and I
-share it with yours.  No warrantee or promise included.
+share it with yours.  No warranty or promise included.
 
 Built with **React 19**, **Tailwind CSS v4**, and **PocketBase**.
 
@@ -19,6 +19,7 @@ Built with **React 19**, **Tailwind CSS v4**, and **PocketBase**.
 * **👥 Multi-User:** Color-coded avatars for every family member. See who added an item and who bought it.
 * **🌓 Dark Mode:** Automatic or manual theme switching.
 * **📱 Mobile First:** Installable as a PWA (Progressive Web App) on iOS and Android.
+* **🌐 International-Ready:** The app is i18n-compliant but developed in English.  There should be no hard-coded text.  Translation help is welcome!
 
 ---
 
