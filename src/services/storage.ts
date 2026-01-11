@@ -467,6 +467,43 @@ async saveCategories(cats: ShoppingCategory[]): Promise<Record<string, string>> 
       localStorage.setItem('fs_holidays', JSON.stringify(holidays));
   } 
 
+  // --- Local-First Caching ---
+  saveLocal(key: string, data: any) {
+      try {
+          localStorage.setItem(`fs_cache_${key}`, JSON.stringify(data));
+      } catch (e) {
+          console.warn(`Failed to save local cache for ${key}`, e);
+      }
+  }
+
+  loadLocal<T>(key: string, fallback: T): T {
+      try {
+          const stored = localStorage.getItem(`fs_cache_${key}`);
+          return stored ? JSON.parse(stored) : fallback;
+      } catch (e) {
+          return fallback;
+      }
+  }
+
+  // --- Mutation Queue ---
+  getQueue(): any[] {
+      try {
+          return JSON.parse(localStorage.getItem('fs_mutation_queue') || '[]');
+      } catch { return []; }
+  }
+
+  addToQueue(action: { type: string, collection: string, payload: any, tempId?: string }) {
+      const queue = this.getQueue();
+      queue.push({ ...action, timestamp: Date.now() });
+      localStorage.setItem('fs_mutation_queue', JSON.stringify(queue));
+  }
+
+  removeFromQueue(timestamp: number) {
+      const queue = this.getQueue();
+      const updated = queue.filter((i: any) => i.timestamp !== timestamp);
+      localStorage.setItem('fs_mutation_queue', JSON.stringify(updated));
+  }
+
   async createBackup(): Promise<any> {
       const [users, events, shopping, todos, settings, stores, categories] = await Promise.all([
           this.getUsers(),

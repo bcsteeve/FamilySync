@@ -9,7 +9,8 @@
     "admin": "Admin",
     "undo": "Undo",
     "redo": "Redo",
-	"loading": "Loading..."
+	"loading": "Loading...",
+	"offline_mode": "Offline Mode - Changes queued"
   },
   "auth": {
     "sign_in": "Sign In",

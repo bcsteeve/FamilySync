@@ -138,3 +138,9 @@ dist
 # PocketBase generated files and executable
 pb_data/
 pocketbase.exe
+
+# My instructions to self and/or AI
+instructions.txt
+dump_code.ps1
+project_context.txt
+structure.txt

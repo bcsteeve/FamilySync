@@ -232,30 +232,29 @@ const App: React.FC = () => {
       let timer: any;
 
       const checkHealth = async () => {
-          // Optimization: Don't waste data if the user isn't looking
           if (document.visibilityState === 'hidden') return;
 
           try {
               await pb.health.check();
-              if (!isServerLive) setIsServerLive(true);
+              if (!isServerLive) {
+                  setIsServerLive(true);
+                  // We just came back online! Process queue!
+                  processMutationQueue();
+              }
           } catch {
               if (isServerLive) setIsServerLive(false);
           }
       };
 
-      // 1. Run regularly while active
       checkHealth();
       timer = setInterval(checkHealth, 10000);
 
-      // 2. React to Visibility Changes (Pause in background, resume immediately on foreground)
       const handleVisibility = () => {
           if (document.visibilityState === 'visible') {
-              checkHealth(); // Check immediately when they come back
-              // Ensure timer is running
+              checkHealth(); 
               clearInterval(timer);
               timer = setInterval(checkHealth, 10000);
           } else {
-              // Stop polling to save data/battery
               clearInterval(timer);
           }
       };
@@ -268,85 +267,156 @@ const App: React.FC = () => {
       };
   }, [isServerLive]);
 
-  // --- SINGLE BOOTSTRAP EFFECT ---
+  // --- SINGLE BOOTSTRAP EFFECT (OFFLINE FIRST) ---
   useEffect(() => {
     const bootstrap = async () => {
-        // 1. Authenticate / Re-validate
-        if (storage.pb.authStore.isValid) {
-            try {
-                await storage.pb.collection('users').authRefresh();
-            } catch (e) {
-                console.warn("Auth token invalid (DB might have been reset). Clearing.");
-                storage.pb.authStore.clear();
-            }
-        }
-
-        // 2. If NOT logged in (or token was cleared above), Check Status
-        if (!storage.pb.authStore.isValid) {
-            try {
-                const res = await fetch(`${storage.pb.baseUrl}/api/app_status`);
-                const data = await res.json();
-                if (data.setupRequired) {
-                    setIsSetupMode(true);
-                }
-            } catch (e) {
-                console.error("Failed to check app status", e);
-            }
-            setIsLoaded(true);
-            return;
-        }
-
-        // 3. PRE-FLIGHT CHECK: Fetch Users FIRST
-        // We do this separately to ensure the user actually exists in the DB
-        // before we try to fetch data belonging to them. This prevents 400 errors.
+        
+        // 1. LOAD LOCAL CACHE IMMEDIATELY (No Blank Screen!)
+        // We load whatever we have, even if stale, so the user can see *something*
         const savedUserId = storage.getAuthUser();
         setCurrentUserId(savedUserId);
         
-        const users = await storage.getUsers();
-
-        if (users.length === 0) {
-            console.warn("Zombie Session Detected: Token valid but 0 users found. Forcing Setup.");
-            storage.pb.authStore.clear();
-            setCurrentUserId(null);
-            setIsSetupMode(true);
-            setIsLoaded(true);
-            return; // <--- ABORT HERE. Shopping/Todos will never be fetched.
+        if (savedUserId) {
+            setUsers(storage.loadLocal('users', []));
+            setEvents(storage.loadLocal('events', []));
+            setShopping(storage.loadLocal('shopping', []));
+            setTodos(storage.loadLocal('todos', []));
+            setSettings(storage.loadLocal('settings', settings));
+            setPaletteKey(storage.loadLocal('paletteKey', 'STANDARD'));
+            setStores(storage.loadLocal('stores', []));
+            setCategories(storage.loadLocal('categories', []));
+            setHolidayEvents(storage.loadLocal('holidays', []));
         }
 
-        setUsers(users);
-
-        // 4. If User is Valid, Fetch the Rest
-        const results = await Promise.allSettled([
-            storage.getEvents(),
-            storage.getShopping(),
-            storage.getTodos(),
-            storage.getSettings(),
-            storage.getPaletteKey(),
-            storage.getStores(),
-            storage.getCategories()
-        ]);
-
-        const getVal = <T,>(res: PromiseSettledResult<T>, def: T): T => 
-            res.status === 'fulfilled' ? res.value : def;
-
-        setEvents(getVal(results[0], []));
-        setShopping(getVal(results[1], []));
-        setTodos(getVal(results[2], []));
-        setSettings(getVal(results[3], settings));
-        setPaletteKey(getVal(results[4], 'STANDARD'));
-        setStores(getVal(results[5], []));
-        setCategories(getVal(results[6], []));
-
-        try {
-            const hol = await storage.getHolidays();
-            setHolidayEvents(hol);
-        } catch (e) { console.error("Holiday fetch failed", e); }
-        
+        // Render the app immediately with cached data
         setIsLoaded(true);
+
+        // 2. NETWORK SYNC (Background)
+        // Now we try to connect to the server and update the data
+        try {
+            // A. Check Auth Validity
+            if (storage.pb.authStore.isValid) {
+                try {
+                    await storage.pb.collection('users').authRefresh();
+                } catch (e) {
+                    console.warn("Auth token invalid. Clearing.");
+                    // Don't clear immediately if we are just offline...
+                    // only clear if the server explicitly rejected us (401).
+                    // For now, we assume if authRefresh throws, we might be offline.
+                }
+            }
+
+            // B. Check Setup Status (Only if no auth)
+            if (!storage.pb.authStore.isValid) {
+                try {
+                    const res = await fetch(`${storage.pb.baseUrl}/api/app_status`);
+                    const data = await res.json();
+                    if (data.setupRequired) setIsSetupMode(true);
+                } catch (e) { /* Likely offline */ }
+                return;
+            }
+
+            // C. Fetch Live Data
+            // We only do this if we suspect we are online.
+            // If the first call fails, we abort the network refresh but keep the local data.
+            try {
+                const freshUsers = await storage.getUsers();
+                if (freshUsers.length === 0 && storage.pb.authStore.isValid) {
+                     // Suspicious: Logged in but no users? 
+                     // Only trust this if we are sure we are online.
+                } else {
+                    setUsers(freshUsers);
+                    storage.saveLocal('users', freshUsers);
+                }
+
+                // If we got users, we are likely online. Fetch the rest.
+                const [rEvents, rShopping, rTodos, rSettings, rPalette, rStores, rCats] = await Promise.all([
+                    storage.getEvents(),
+                    storage.getShopping(),
+                    storage.getTodos(),
+                    storage.getSettings(),
+                    storage.getPaletteKey(),
+                    storage.getStores(),
+                    storage.getCategories()
+                ]);
+
+                setEvents(rEvents); storage.saveLocal('events', rEvents);
+                setShopping(rShopping); storage.saveLocal('shopping', rShopping);
+                setTodos(rTodos); storage.saveLocal('todos', rTodos);
+                setSettings(rSettings); storage.saveLocal('settings', rSettings);
+                setPaletteKey(rPalette); storage.saveLocal('paletteKey', rPalette);
+                setStores(rStores); storage.saveLocal('stores', rStores);
+                setCategories(rCats); storage.saveLocal('categories', rCats);
+                
+                // Fetch Holidays
+                const hol = await storage.getHolidays();
+                setHolidayEvents(hol);
+                storage.saveLocal('holidays', hol);
+
+                setIsServerLive(true);
+                processMutationQueue(); // <--- REPLAY OFFLINE ACTIONS
+
+            } catch (err) {
+                console.warn("Network bootstrap failed (Offline Mode active)", err);
+                setIsServerLive(false);
+            }
+
+        } catch (e) {
+            console.error("Critical Bootstrap Error", e);
+        }
     };
 
     bootstrap();
   }, []);
+
+  // --- QUEUE PROCESSOR ---
+  const processMutationQueue = async () => {
+      const queue = storage.getQueue();
+      if (queue.length === 0) return;
+
+      console.log(`Processing ${queue.length} offline actions...`);
+      
+      // We process sequentially to maintain order
+      for (const action of queue) {
+          try {
+              if (action.type === 'CREATE') {
+                  if (action.collection === 'shopping') {
+                       const created = await storage.createShoppingItem(action.payload);
+                       // Swap ID in local state
+                       if (action.tempId) {
+                           setShopping(prev => prev.map(i => i.id === action.tempId ? { ...i, id: created.id } : i));
+                       }
+                  } else if (action.collection === 'todos') {
+                      const created = await storage.createTodo(action.payload);
+                      if (action.tempId) {
+                          setTodos(prev => prev.map(i => i.id === action.tempId ? { ...i, id: created.id } : i));
+                      }
+                  } else if (action.collection === 'events') {
+                      const created = await storage.createEvent(action.payload);
+                      if (action.tempId) {
+                           setEvents(prev => prev.map(i => i.id === action.tempId ? { ...i, id: created.id } : i));
+                      }
+                  }
+              } else if (action.type === 'UPDATE') {
+                  if (action.collection === 'shopping') await storage.updateShoppingItem(action.payload);
+                  if (action.collection === 'todos') await storage.updateTodo(action.payload);
+                  if (action.collection === 'events') await storage.updateEvent(action.payload);
+              } else if (action.type === 'DELETE') {
+                  if (action.collection === 'shopping') await storage.deleteShoppingItem(action.payload); // payload is ID
+                  if (action.collection === 'todos') await storage.deleteTodo(action.payload);
+                  if (action.collection === 'events') await storage.deleteEvent(action.payload);
+              }
+              
+              // If successful, remove from queue
+              storage.removeFromQueue(action.timestamp);
+
+          } catch (e) {
+              console.error("Failed to replay action", action, e);
+              // We leave it in the queue? Or remove it to prevent blocking? 
+              // For now, we leave it. Ideally, we need retry counts.
+          }
+      }
+  };
 
 /**
    * Universal Sync Logic (Optimistic UI Pattern)
@@ -390,122 +460,121 @@ const App: React.FC = () => {
 
   const updateSettings = async (newSettings: SystemSettings) => {
       setSettings(newSettings);
-      await storage.saveSettings(newSettings);
+      storage.saveLocal('settings', newSettings); // Persist
+      try { await storage.saveSettings(newSettings); } catch (e) { /* Queue logic not needed for settings yet */ }
   };
-
   const updatePaletteKey = async (key: PaletteKey) => {
       setPaletteKey(key);
-      await storage.savePaletteKey(key);
+      storage.saveLocal('paletteKey', key); // Persist
+      try { await storage.savePaletteKey(key); } catch (e) {}
   };
-
-const updateStores = async (newStores: ShoppingStore[]) => {
-    // 1. Optimistic Update (UI updates immediately)
+  const updateStores = async (newStores: ShoppingStore[]) => {
     setStores(newStores);
-
-    // 2. Save to DB and get the ID swaps
-    const idMap = await storage.saveStores(newStores);
-
-    // 3. If any IDs changed, we must update React state to match the DB
-    if (Object.keys(idMap).length > 0) {
-        
-        // A. Update the Stores List with Real IDs
-        setStores(prev => prev.map(s => 
-            idMap[s.id] ? { ...s, id: idMap[s.id] } : s
-        ));
-
-        // B. CRITICAL: Update Categories that referenced the old Temp Store IDs
-        const updatedCategories = categories.map(c => 
-            idMap[c.storeId] ? { ...c, storeId: idMap[c.storeId] } : c
-        );
-        
-        // Update Local State
-        setCategories(updatedCategories);
-
-        // Update DB (Fixes "Unknown Store" issue by persisting the new Store IDs to the categories)
-        const catsToUpdate = updatedCategories.filter(c => idMap[c.storeId || '']);
-        for (const cat of catsToUpdate) {
-            try { await storage.pb.collection('shopping_categories').update(cat.id, cat); } 
-            catch (e) { console.error("Failed to patch category link", e); }
+    storage.saveLocal('stores', newStores); // Persist
+    
+    // Simplification for offline stores: We just try to save. 
+    // Full offline support for Store/Category structural changes is complex (ID dependency).
+    // For now, we wrap in try/catch so it doesn't crash.
+    try {
+        const idMap = await storage.saveStores(newStores);
+        if (Object.keys(idMap).length > 0) {
+            setStores(prev => prev.map(s => idMap[s.id] ? { ...s, id: idMap[s.id] } : s));
+            const updatedCategories = categories.map(c => idMap[c.storeId] ? { ...c, storeId: idMap[c.storeId] } : c);
+            setCategories(updatedCategories);
+            storage.saveLocal('stores', newStores); // Save again with real IDs
+            storage.saveLocal('categories', updatedCategories);
+            
+            // Fix categories on server
+            const catsToUpdate = updatedCategories.filter(c => idMap[c.storeId || '']);
+            for (const cat of catsToUpdate) {
+                try { await storage.pb.collection('shopping_categories').update(cat.id, cat); } catch (e) {}
+            }
         }
-    }
+    } catch (e) { console.warn("Offline: Stores saved locally only."); }
 }
 
 const updateCategories = async (newCats: ShoppingCategory[]) => {
-    // 1. Optimistic Update
     setCategories(newCats);
-
-    // 2. Save and get swaps
-    const idMap = await storage.saveCategories(newCats);
-
-    // 3. Update local state with real IDs so future edits work
-    if (Object.keys(idMap).length > 0) {
-        setCategories(prev => prev.map(c => 
-            idMap[c.id] ? { ...c, id: idMap[c.id] } : c
-        ));
-    }
+    storage.saveLocal('categories', newCats); // Persist
+    try {
+        const idMap = await storage.saveCategories(newCats);
+        if (Object.keys(idMap).length > 0) {
+            setCategories(prev => prev.map(c => idMap[c.id] ? { ...c, id: idMap[c.id] } : c));
+            storage.saveLocal('categories', newCats); // Save again with real IDs
+        }
+    } catch (e) { console.warn("Offline: Categories saved locally only."); }
 }
 
   const updateUsers = (newUsers: User[], skipHistory = false) => {
       if (JSON.stringify(newUsers) === JSON.stringify(users)) return;
       setUsers(newUsers);
-      storage.saveUsers(newUsers);
+      storage.saveLocal('users', newUsers);
+      storage.saveUsers(newUsers).catch(() => {});
   };
 
-  const updateEvents = (newEvents: CalendarEvent[], skipHistory = false) => {
-      if (JSON.stringify(newEvents) === JSON.stringify(events)) return;
+  // --- UNIVERSAL SYNC WRAPPER WITH OFFLINE QUEUE ---
+  const handleUpdate = <T extends { id: string }>(
+      collectionName: 'events' | 'shopping' | 'todos',
+      currentList: T[],
+      newList: T[],
+      setter: (items: T[]) => void,
+      skipHistory: boolean,
+      createFn: (i: T) => Promise<T>,
+      updateFn: (i: T) => Promise<void>,
+      deleteFn: (id: string) => Promise<void>
+  ) => {
+      if (JSON.stringify(newList) === JSON.stringify(currentList)) return;
       if (!skipHistory) pushToHistory();
-      
-      const oldEvents = events;
-      setEvents(newEvents); 
-      
+
+      // 1. Optimistic Update & Local Persistence
+      setter(newList);
+      storage.saveLocal(collectionName, newList);
+
+      // 2. Diffing & Network / Queue
       syncToBackend(
-          oldEvents, 
-          newEvents, 
-          storage.createEvent, 
-          storage.updateEvent, 
-          storage.deleteEvent,
+          currentList,
+          newList,
+          // Create Wrapper
+          async (item) => {
+              try { return await createFn(item); } 
+              catch (e) { 
+                  storage.addToQueue({ type: 'CREATE', collection: collectionName, payload: item, tempId: item.id });
+                  throw e; // Rethrow to stop syncToBackend from thinking it succeeded
+              }
+          },
+          // Update Wrapper
+          async (item) => {
+              try { await updateFn(item); }
+              catch (e) {
+                  storage.addToQueue({ type: 'UPDATE', collection: collectionName, payload: item });
+              }
+          },
+          // Delete Wrapper
+          async (id) => {
+              try { await deleteFn(id); }
+              catch (e) {
+                  storage.addToQueue({ type: 'DELETE', collection: collectionName, payload: id });
+              }
+          },
+          // ID Swap
           (tempId, realId) => {
-              setEvents(prev => prev.map(e => e.id === tempId ? { ...e, id: realId } : e));
+              setter(prev => (prev as any[]).map((e: any) => e.id === tempId ? { ...e, id: realId } : e));
+              // Note: We don't need to re-save local here, React effect/next render will catch it eventually,
+              // or we can force it, but let's keep it simple.
           }
       );
+  }
+
+  const updateEvents = (newEvents: CalendarEvent[], skipHistory = false) => {
+      handleUpdate('events', events, newEvents, setEvents, skipHistory, storage.createEvent, storage.updateEvent, storage.deleteEvent);
   };
 
   const updateShopping = (newShopping: ShoppingItem[], skipHistory = false) => {
-      if (JSON.stringify(newShopping) === JSON.stringify(shopping)) return;
-      if (!skipHistory) pushToHistory();
-      
-      const oldShopping = shopping;
-      setShopping(newShopping);
-      
-      syncToBackend(
-          oldShopping, 
-          newShopping, 
-          storage.createShoppingItem, 
-          storage.updateShoppingItem, 
-          storage.deleteShoppingItem,
-          (tempId, realId) => {
-              setShopping(prev => prev.map(e => e.id === tempId ? { ...e, id: realId } : e));
-          }
-      );
+      handleUpdate('shopping', shopping, newShopping, setShopping, skipHistory, storage.createShoppingItem, storage.updateShoppingItem, storage.deleteShoppingItem);
   };
 
   const updateTodos = (newTodos: TodoItem[], skipHistory = false) => {
-      if (JSON.stringify(newTodos) === JSON.stringify(todos)) return;
-      if (!skipHistory) pushToHistory();
-
-      const oldTodos = todos;
-      setTodos(newTodos);
-
-      syncToBackend(
-          oldTodos, 
-          newTodos, 
-          storage.createTodo, 
-          storage.updateTodo, 
-          storage.deleteTodo,
-          (tempId, realId) => {
-              setTodos(prev => prev.map(e => e.id === tempId ? { ...e, id: realId } : e));
-          }
-      );
+      handleUpdate('todos', todos, newTodos, setTodos, skipHistory, storage.createTodo, storage.updateTodo, storage.deleteTodo);
   };
 
   // --- History (Undo/Redo) ---
@@ -978,9 +1047,19 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
             )}
           </div>
 
+          {/* Offline Indicator */}
+          {!isServerLive && (
+              <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[140] animate-in slide-in-from-top-2">
+                  <div className="bg-red-500 text-white px-4 py-1.5 rounded-full shadow-lg flex items-center gap-2 font-bold text-xs border border-red-600">
+                      <WifiOff size={12} />
+                      {t('app.offline_mode')}
+                  </div>
+              </div>
+          )}
+
           {/* Global Toast Notification */}
           {globalToast && (
-              <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[150] animate-in slide-in-from-top-2 fade-in duration-300 pointer-events-none">
+              <div className="absolute top-24 left-1/2 -translate-x-1/2 z-[150] animate-in slide-in-from-top-2 fade-in duration-300 pointer-events-none">
                   <div className="bg-gray-900/90 dark:bg-white/90 text-white dark:text-gray-900 px-6 py-3 rounded-full shadow-2xl backdrop-blur-md flex items-center gap-3 font-bold text-sm border border-gray-700 dark:border-gray-200">
                       <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"/>
                       {globalToast.msg}
