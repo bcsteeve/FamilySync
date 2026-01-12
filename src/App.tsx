@@ -63,7 +63,7 @@ const App: React.FC = () => {
   // --- UI State ---
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [globalToast, setGlobalToast] = useState<{ msg: string, type: 'info' | 'success' } | null>(null);
-  const [isServerLive, setIsServerLive] = useState(true);
+  const [isServerLive, setIsServerLive] = useState(navigator.onLine);
   const [isReadOnly, setIsReadOnly] = useState(false);
   
   // Ref for Realtime Callbacks (Prevents connection cycling)
@@ -236,7 +236,10 @@ const App: React.FC = () => {
           if (document.visibilityState === 'hidden') return;
 
           try {
-              await pb.health.check();
+              // Enforce a strict timeout (3s) for PWA environments where fetch might hang
+              const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000));
+              await Promise.race([pb.health.check(), timeout]);
+
               // If we were offline (or uninitialized) and now we are online...
               if (!isServerLive) {
                   setIsServerLive(true);
@@ -811,6 +814,13 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
       e.preventDefault();
       if (!loginUsername.trim() || !loginPassword.trim()) return;
 
+      // Immediate check for PWA/Mobile offline state
+      if (!navigator.onLine) {
+          setLoginError(t('messages.server_unreachable'));
+          setIsServerLive(false);
+          return;
+      }
+
       try {
           const user = await storage.loginUser(loginUsername, loginPassword);
           setCurrentUserId(user.id);
@@ -827,6 +837,7 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
           } else {
               // Treat 0 (Offline), undefined (Network Error), or 5xx (Server Error) as connection issues
               setLoginError(t('messages.server_unreachable'));
+              setIsServerLive(false); // Force offline UI state
           }
       }
   };
