@@ -56,7 +56,6 @@ const Settings: React.FC<SettingsProps> = ({
   }
   const { users, currentUser, updateUsers: onUpdateUsers } = useUser();
   const { paletteKey, activePalette, updatePaletteKey: onUpdatePaletteKey } = useTheme();
-  const { t, i18n } = useTranslation();
 
   const [newUserName, setNewUserName] = useState('');
   const [newUserPass, setNewUserPass] = useState('');
