@@ -236,10 +236,14 @@ const App: React.FC = () => {
 
           try {
               await pb.health.check();
+              // If we were offline (or uninitialized) and now we are online...
               if (!isServerLive) {
                   setIsServerLive(true);
-                  // We just came back online! Process queue!
-                  processMutationQueue();
+                  console.log("Connection restored! Syncing...");
+                  // 1. Push our offline changes
+                  await processMutationQueue();
+                  // 2. Pull everyone else's changes (Fixes the "Son's items missing" bug)
+                  await refreshRemoteData();
               }
           } catch {
               if (isServerLive) setIsServerLive(false);
@@ -267,12 +271,50 @@ const App: React.FC = () => {
       };
   }, [isServerLive]);
 
+  // --- REUSABLE DATA FETCHER ---
+  const refreshRemoteData = async () => {
+      try {
+          console.log("Fetching fresh data from server...");
+          const freshUsers = await storage.getUsers();
+          if (freshUsers.length > 0) {
+              setUsers(freshUsers);
+              storage.saveLocal('users', freshUsers);
+          }
+
+          const [rEvents, rShopping, rTodos, rSettings, rPalette, rStores, rCats] = await Promise.all([
+              storage.getEvents(),
+              storage.getShopping(),
+              storage.getTodos(),
+              storage.getSettings(),
+              storage.getPaletteKey(),
+              storage.getStores(),
+              storage.getCategories()
+          ]);
+
+          setEvents(rEvents); storage.saveLocal('events', rEvents);
+          setShopping(rShopping); storage.saveLocal('shopping', rShopping);
+          setTodos(rTodos); storage.saveLocal('todos', rTodos);
+          setSettings(rSettings); storage.saveLocal('settings', rSettings);
+          setPaletteKey(rPalette); storage.saveLocal('paletteKey', rPalette);
+          setStores(rStores); storage.saveLocal('stores', rStores);
+          setCategories(rCats); storage.saveLocal('categories', rCats);
+          
+          const hol = await storage.getHolidays();
+          setHolidayEvents(hol);
+          storage.saveLocal('holidays', hol);
+
+          return true;
+      } catch (e) {
+          console.warn("Failed to refresh remote data", e);
+          return false;
+      }
+  };
+
   // --- SINGLE BOOTSTRAP EFFECT (OFFLINE FIRST) ---
   useEffect(() => {
     const bootstrap = async () => {
         
         // 1. LOAD LOCAL CACHE IMMEDIATELY (No Blank Screen!)
-        // We load whatever we have, even if stale, so the user can see *something*
         const savedUserId = storage.getAuthUser();
         setCurrentUserId(savedUserId);
         
@@ -288,21 +330,31 @@ const App: React.FC = () => {
             setHolidayEvents(storage.loadLocal('holidays', []));
         }
 
-        // Render the app immediately with cached data
         setIsLoaded(true);
 
         // 2. NETWORK SYNC (Background)
-        // Now we try to connect to the server and update the data
         try {
-            // A. Check Auth Validity
+            // A. Check Auth Validity with Offline Tolerance
             if (storage.pb.authStore.isValid) {
                 try {
                     await storage.pb.collection('users').authRefresh();
-                } catch (e) {
-                    console.warn("Auth token invalid. Clearing.");
-                    // Don't clear immediately if we are just offline...
-                    // only clear if the server explicitly rejected us (401).
-                    // For now, we assume if authRefresh throws, we might be offline.
+                } catch (e: any) {
+                    // CRITICAL CHANGE: Differentiate between "Blocked" (401) and "Offline" (0/500)
+                    if (e.status === 401) {
+                        console.warn("Auth token invalid/expired. Logging out.");
+                        storage.pb.authStore.clear();
+                        setCurrentUserId(null); // Kick user to login
+                        // Re-check setup mode since we are logged out
+                        try {
+                            const res = await fetch(`${storage.pb.baseUrl}/api/app_status`);
+                            const data = await res.json();
+                            if (data.setupRequired) setIsSetupMode(true);
+                        } catch {}
+                        return;
+                    } else {
+                        console.warn("Auth check failed but token might still be good. Assuming offline.");
+                        // DO NOT clear auth. Let them stay "logged in" offline.
+                    }
                 }
             }
 
@@ -317,47 +369,12 @@ const App: React.FC = () => {
             }
 
             // C. Fetch Live Data
-            // We only do this if we suspect we are online.
-            // If the first call fails, we abort the network refresh but keep the local data.
-            try {
-                const freshUsers = await storage.getUsers();
-                if (freshUsers.length === 0 && storage.pb.authStore.isValid) {
-                     // Suspicious: Logged in but no users? 
-                     // Only trust this if we are sure we are online.
-                } else {
-                    setUsers(freshUsers);
-                    storage.saveLocal('users', freshUsers);
-                }
-
-                // If we got users, we are likely online. Fetch the rest.
-                const [rEvents, rShopping, rTodos, rSettings, rPalette, rStores, rCats] = await Promise.all([
-                    storage.getEvents(),
-                    storage.getShopping(),
-                    storage.getTodos(),
-                    storage.getSettings(),
-                    storage.getPaletteKey(),
-                    storage.getStores(),
-                    storage.getCategories()
-                ]);
-
-                setEvents(rEvents); storage.saveLocal('events', rEvents);
-                setShopping(rShopping); storage.saveLocal('shopping', rShopping);
-                setTodos(rTodos); storage.saveLocal('todos', rTodos);
-                setSettings(rSettings); storage.saveLocal('settings', rSettings);
-                setPaletteKey(rPalette); storage.saveLocal('paletteKey', rPalette);
-                setStores(rStores); storage.saveLocal('stores', rStores);
-                setCategories(rCats); storage.saveLocal('categories', rCats);
-                
-                // Fetch Holidays
-                const hol = await storage.getHolidays();
-                setHolidayEvents(hol);
-                storage.saveLocal('holidays', hol);
-
+            const success = await refreshRemoteData();
+            
+            if (success) {
                 setIsServerLive(true);
-                processMutationQueue(); // <--- REPLAY OFFLINE ACTIONS
-
-            } catch (err) {
-                console.warn("Network bootstrap failed (Offline Mode active)", err);
+                processMutationQueue(); 
+            } else {
                 setIsServerLive(false);
             }
 
@@ -910,7 +927,16 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
       <ThemeContext.Provider value={{ paletteKey, activePalette, updatePaletteKey, getUserColor }}>
         
         {/* FIX: Use h-dvh (Dynamic Viewport Height) to respect mobile browser bars */}
-        <div className="h-dvh w-full flex flex-col bg-gray-100 dark:bg-gray-900 relative overflow-hidden">
+        <div className={`h-dvh w-full flex flex-col relative overflow-hidden transition-colors duration-200 
+            ${!isServerLive ? 'border-t-4 border-l-4 border-r-4 border-red-500 bg-red-50/30 dark:bg-red-900/10' : 'bg-gray-100 dark:bg-gray-900'}`}>
+          
+          {/* Offline Header Banner (Unobtrusive) */}
+          {!isServerLive && (
+               <div className="w-full bg-red-500 text-white text-[10px] uppercase tracking-widest font-bold text-center py-0.5 shrink-0">
+                   {t('app.offline_mode')}
+               </div>
+           )}
+
           {/* Top Bar */}
           <div className="h-14 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700 flex items-center px-4 justify-between shrink-0 z-20">
             <div className="flex items-center gap-2">
@@ -1047,17 +1073,8 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
             )}
           </div>
 
-          {/* Offline Indicator */}
-          {!isServerLive && (
-              <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[140] animate-in slide-in-from-top-2">
-                  <div className="bg-red-500 text-white px-4 py-1.5 rounded-full shadow-lg flex items-center gap-2 font-bold text-xs border border-red-600">
-                      <WifiOff size={12} />
-                      {t('app.offline_mode')}
-                  </div>
-              </div>
-          )}
-
           {/* Global Toast Notification */}
+		  
           {globalToast && (
               <div className="absolute top-24 left-1/2 -translate-x-1/2 z-[150] animate-in slide-in-from-top-2 fade-in duration-300 pointer-events-none">
                   <div className="bg-gray-900/90 dark:bg-white/90 text-white dark:text-gray-900 px-6 py-3 rounded-full shadow-2xl backdrop-blur-md flex items-center gap-3 font-bold text-sm border border-gray-700 dark:border-gray-200">
