@@ -39,25 +39,6 @@ const Settings: React.FC<SettingsProps> = ({
 }) => {
   // CONTEXT HOOKS
   const { t, i18n } = useTranslation();
-  
-  // Lock settings if Read Only (Logged Out) OR Server is Offline
-  if (isReadOnly || !isServerLive) {
-      const isOfflineLock = !isReadOnly && !isServerLive;
-      
-      return (
-          <div className="h-full flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-900 p-6 text-center">
-              <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm w-full animate-in zoom-in-95 duration-200">
-                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${isOfflineLock ? 'bg-red-100 dark:bg-red-900/30 text-red-500 dark:text-red-400' : 'bg-orange-100 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400'}`}>
-                      {isOfflineLock ? <WifiOff size={32} /> : <Lock size={32} />}
-                  </div>
-                  <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-2">{t('settings.security_lock')}</h2>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 leading-relaxed">
-                      {isOfflineLock ? t('settings.offline_lock_desc') : t('settings.read_only_desc')}
-                  </p>
-              </div>
-          </div>
-      );
-  }
   const { users, currentUser, updateUsers: onUpdateUsers } = useUser();
   const { paletteKey, activePalette, updatePaletteKey: onUpdatePaletteKey } = useTheme();
 
@@ -146,6 +127,26 @@ const Settings: React.FC<SettingsProps> = ({
       };
       loadSubs();
   }, [settings.holidayCountryCode]);
+
+  // Lock settings if Read Only (Logged Out) OR Server is Offline
+  // (Placed here to ensure all hooks run BEFORE this conditional return)
+  if (isReadOnly || !isServerLive) {
+      const isOfflineLock = !isReadOnly && !isServerLive;
+      
+      return (
+          <div className="h-full flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-900 p-6 text-center">
+              <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm w-full animate-in zoom-in-95 duration-200">
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${isOfflineLock ? 'bg-red-100 dark:bg-red-900/30 text-red-500 dark:text-red-400' : 'bg-orange-100 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400'}`}>
+                      {isOfflineLock ? <WifiOff size={32} /> : <Lock size={32} />}
+                  </div>
+                  <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-2">{t('settings.security_lock')}</h2>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 leading-relaxed">
+                      {isOfflineLock ? t('settings.offline_lock_desc') : t('settings.read_only_desc')}
+                  </p>
+              </div>
+          </div>
+      );
+  }
 
   if (!currentUser) return null;
 
