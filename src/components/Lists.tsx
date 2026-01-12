@@ -603,7 +603,6 @@ const Lists: React.FC<ListsProps> = ({
                               value={editFormData.content} 
                               onChange={(e) => setEditFormData({ ...editFormData, content: e.target.value })}
                               className="w-full text-2xl font-bold border-b-2 border-gray-100 dark:border-gray-700 focus:border-blue-500 outline-none py-2 text-gray-800 dark:text-gray-100 bg-transparent placeholder-gray-300 dark:placeholder-gray-600"
-                              autoFocus
                           />
                       </div>
 
@@ -711,7 +710,6 @@ const Lists: React.FC<ListsProps> = ({
                               value={todoFormData.content || ''} 
                               onChange={(e) => setTodoFormData({ ...todoFormData, content: e.target.value })}
                               className="w-full text-2xl font-bold border-b-2 border-gray-100 dark:border-gray-700 focus:border-blue-500 outline-none py-2 text-gray-800 dark:text-gray-100 bg-transparent placeholder-gray-300 dark:placeholder-gray-600"
-                              autoFocus
                           />
                       </div>
                       

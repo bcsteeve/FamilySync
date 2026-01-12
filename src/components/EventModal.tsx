@@ -440,7 +440,6 @@ const EventModal: React.FC<EventModalProps> = ({
                 onChange={e => setFormData({...formData, title: e.target.value})}
                 className="w-full text-2xl font-bold border-b-2 border-gray-100 dark:border-gray-700 focus:border-blue-500 outline-none py-2 bg-transparent placeholder-gray-300 dark:placeholder-gray-600 transition-colors dark:text-white"
                 placeholder={t('event_modal.title')}
-                autoFocus
                 />
             </div>
 

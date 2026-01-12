@@ -476,7 +476,7 @@ const Calendar: React.FC<CalendarProps> = ({
       };
   }, []);
 
-  const renderDateExtras = (date: Date) => {
+  const renderDateExtras = (date: Date, className?: string) => {
       if (!date || effectiveViewMode === 'AGENDA') return null; 
       const extras = [];
       
@@ -505,8 +505,10 @@ const Calendar: React.FC<CalendarProps> = ({
           }
       }
 
+      if (extras.length === 0) return null;
+
       return (
-          <div className="flex gap-2 items-center justify-center mt-1 min-h-[20px] flex-wrap">
+          <div className={className || "flex gap-2 items-center justify-center mt-1 min-h-[20px] flex-wrap"}>
               {extras}
           </div>
       );
@@ -720,7 +722,7 @@ const Calendar: React.FC<CalendarProps> = ({
                      <div className="relative flex items-center gap-1 group">
                         <DatePicker
                             selected={displayDate}
-                            onChange={(date: Date) => { setCurrentDate(date); }}
+                            onChange={(date: Date | null) => { if (date) setCurrentDate(date); }}
                             dateFormat={t('formats.month_year')}
                             showMonthYearPicker
                             showYearDropdown
@@ -730,6 +732,8 @@ const Calendar: React.FC<CalendarProps> = ({
                             locale={currentUser.preferences?.language?.split('-')[0] || 'en'}
                             name="calendarMonthPicker"
                             id="calendarMonthPicker"
+                            onKeyDown={(e) => e.preventDefault()}
+                            onFocus={(e) => e.target.blur()}
                         />
                         <ChevronDown size={16} className="text-gray-400 dark:text-gray-500 pointer-events-none absolute right-0" />
                      </div>
@@ -896,12 +900,22 @@ const Calendar: React.FC<CalendarProps> = ({
                         >
                              <div className="flex items-center justify-between md:justify-center mb-1 shrink-0">
                                  <span className="md:hidden text-sm font-bold text-gray-500 dark:text-gray-400 uppercase">{date.toLocaleDateString(i18n.language, { weekday: 'short' })}</span>
+                                 
+                                 {/* Mobile: Extras Inline */}
+                                 <div className="md:hidden">
+                                     {renderDateExtras(date, "flex items-center gap-2 scale-90")}
+                                 </div>
+
                                  <div className="flex items-center gap-2">
                                     <span className="text-[0.625rem] font-bold text-gray-300 dark:text-gray-600 uppercase tracking-tight">{date.toLocaleDateString(i18n.language, { month: 'short' })}</span>
                                     <div className={`text-sm font-bold w-7 h-7 flex items-center justify-center rounded-full ${isToday ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300'}`}>{date.getDate()}</div>
                                  </div>
                              </div>
-                             {renderDateExtras(date)}
+                             
+                             {/* Desktop: Extras Below (Default) */}
+                             <div className="hidden md:block">
+                                {renderDateExtras(date)}
+                             </div>
                              <div className="flex flex-col gap-1.5 mt-1 flex-1">
                                  {dayEvents.map(event => {
                                      const realId = event.id.split('_')[0];
