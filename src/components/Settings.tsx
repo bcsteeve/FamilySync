@@ -26,15 +26,34 @@ interface SettingsProps {
   onUpdateStores: (stores: ShoppingStore[]) => void;
   categories: ShoppingCategory[];
   onUpdateCategories: (categories: ShoppingCategory[]) => void;
+  isReadOnly?: boolean;
 }
 
 const EMOJI_LIST = ['👨', '👩', '👦', '👧', '👶', '👴', '👵', '🙂', '😎', '🤓', '🤠', '👽', '🤖', '👻', '🐶', '🐱', '🦊', '🐻', '🐼', '🐨'];
 
 const Settings: React.FC<SettingsProps> = ({ 
   events, onUpdateEvents, shopping, onUpdateShopping, todos, onUpdateTodos,
-  settings, onUpdateSettings, stores, onUpdateStores, categories, onUpdateCategories
+  settings, onUpdateSettings, stores, onUpdateStores, categories, onUpdateCategories,
+  isReadOnly
 }) => {
   // CONTEXT HOOKS
+  const { t, i18n } = useTranslation();
+  
+  if (isReadOnly) {
+      return (
+          <div className="h-full flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-900 p-6 text-center">
+              <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm w-full">
+                  <div className="w-16 h-16 bg-orange-100 dark:bg-orange-900/30 rounded-full flex items-center justify-center mx-auto mb-4 text-orange-500 dark:text-orange-400">
+                      <Lock size={32} />
+                  </div>
+                  <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-2">{t('settings.security_lock')}</h2>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 leading-relaxed">
+                      {t('settings.read_only_desc')}
+                  </p>
+              </div>
+          </div>
+      );
+  }
   const { users, currentUser, updateUsers: onUpdateUsers } = useUser();
   const { paletteKey, activePalette, updatePaletteKey: onUpdatePaletteKey } = useTheme();
   const { t, i18n } = useTranslation();

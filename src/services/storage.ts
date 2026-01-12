@@ -39,6 +39,16 @@ class StorageService {
       return pb.authStore.isValid && pb.authStore.model ? pb.authStore.model.id : null;
   }
 
+  // Persist the ID of the last active user to allow Offline Read-Only access
+  // even if the auth token is invalid/cleared.
+  setLastActiveUser(userId: string) {
+      localStorage.setItem('fs_last_active_user', userId);
+  }
+
+  getLastActiveUser(): string | null {
+      return localStorage.getItem('fs_last_active_user');
+  }
+
   // --- Auth / Setup ---
   async registerUser(username: string, password: string): Promise<User> {
       let email: string;
@@ -70,7 +80,9 @@ class StorageService {
       });
       
       await pb.collection('users').authWithPassword(email, password);
-      return this.mapUser(record);
+      const mapped = this.mapUser(record);
+      this.setLastActiveUser(mapped.id);
+      return mapped;
   }
 
   async loginUser(username: string, password: string): Promise<User> {
@@ -81,7 +93,9 @@ class StorageService {
       }
       
       const authData = await pb.collection('users').authWithPassword(emailToUse, password);
-      return this.mapUser(authData.record);
+      const mapped = this.mapUser(authData.record);
+      this.setLastActiveUser(mapped.id);
+      return mapped;
   }
 
   async createFamilyMember(username: string, password: string): Promise<User> {

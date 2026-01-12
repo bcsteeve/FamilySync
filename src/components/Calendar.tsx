@@ -27,11 +27,12 @@ interface CalendarProps {
   weatherData: WeatherData[];
   holidayEvents: CalendarEvent[];
   isSidebar?: boolean;
+  isReadOnly?: boolean;
 }
 
 const Calendar: React.FC<CalendarProps> = ({ 
     events, viewMode, onViewModeChange, 
-    onEventClick, onDateClick, onUpdateEvents, settings, weatherData, holidayEvents, isSidebar 
+    onEventClick, onDateClick, onUpdateEvents, settings, weatherData, holidayEvents, isSidebar, isReadOnly 
 }) => {
   const { users, currentUser } = useUser();
   const { t, i18n } = useTranslation();
@@ -704,6 +705,7 @@ const Calendar: React.FC<CalendarProps> = ({
                         >
                             <Search size={20} />
                         </button>
+                        {!isReadOnly && (
                         <button 
                             onClick={() => onDateClick(new Date())} 
                             className="text-white p-2 rounded-full bg-blue-600 shadow-md hover:bg-blue-700 transition-all active:scale-95"
@@ -711,6 +713,7 @@ const Calendar: React.FC<CalendarProps> = ({
                         >
                             <Plus size={18} />
                         </button>
+                        )}
                     </div>
                 </div>
                 <div className="flex items-center justify-between w-full relative">
@@ -742,7 +745,7 @@ const Calendar: React.FC<CalendarProps> = ({
       )}
 
       {/* --- SIDEBAR HEADER WITH QUICK ADD --- */}
-      {isSidebar && (
+      {isSidebar && !isReadOnly && (
         <div className="p-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shrink-0 z-20">
             <button 
                 onClick={() => onDateClick(new Date())}
@@ -908,7 +911,7 @@ const Calendar: React.FC<CalendarProps> = ({
                                      // LOGIC CHANGE: Allow "draggable" attribute even for recurring items, 
                                      // so we can catch the 'dragstart' event and show the shake animation.
                                      const isSeriesMember = !!event.rrule || event.id.includes('_');
-                                     const allowDragAttempt = !isHoliday && !isSidebar;
+                                     const allowDragAttempt = !isHoliday && !isSidebar && !isReadOnly;
                                      // const isActuallyDraggable = allowDragAttempt && !isSeriesMember; // Removed: We want the grab cursor even if locked
 
                                      const textColor = isHoliday ? (currentUser.preferences?.theme === 'DARK' ? '#e5e7eb' : '#1f2937') : getTextColor(event.userIds, event.title);

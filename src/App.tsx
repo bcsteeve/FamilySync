@@ -64,6 +64,7 @@ const App: React.FC = () => {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [globalToast, setGlobalToast] = useState<{ msg: string, type: 'info' | 'success' } | null>(null);
   const [isServerLive, setIsServerLive] = useState(true);
+  const [isReadOnly, setIsReadOnly] = useState(false);
   
   // Ref for Realtime Callbacks (Prevents connection cycling)
   const currentUserRef = useRef<User | null>(null);
@@ -240,10 +241,18 @@ const App: React.FC = () => {
               if (!isServerLive) {
                   setIsServerLive(true);
                   console.log("Connection restored! Syncing...");
-                  // 1. Push our offline changes
-                  await processMutationQueue();
-                  // 2. Pull everyone else's changes (Fixes the "Son's items missing" bug)
-                  await refreshRemoteData();
+
+                  if (isReadOnly) {
+                      // Force login if connection comes back while in Read Only
+                      setGlobalToast({ msg: t('app.connection_restored'), type: 'info' });
+                      // We don't auto-logout here to avoid jarring UX, but we disable the "Offline" banner
+                      // and show a "Login" prompt via the UI or toast.
+                  } else {
+                      // 1. Push our offline changes
+                      await processMutationQueue();
+                      // 2. Pull everyone else's changes
+                      await refreshRemoteData();
+                  }
               }
           } catch {
               if (isServerLive) setIsServerLive(false);
@@ -544,6 +553,7 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
       updateFn: (i: T) => Promise<void>,
       deleteFn: (id: string) => Promise<void>
   ) => {
+      if (isReadOnly) return; // Block all updates in Read Only mode
       if (JSON.stringify(newList) === JSON.stringify(currentList)) return;
       if (!skipHistory) pushToHistory();
 
@@ -804,16 +814,19 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
       try {
           const user = await storage.loginUser(loginUsername, loginPassword);
           setCurrentUserId(user.id);
+          setIsReadOnly(false);
           setLoginError('');
           setLoginPassword('');
           // Force reload to get fresh data
           window.location.reload();
       } catch (err: any) {
           console.error(err);
-          if (err.status === 0) {
-              setLoginError(t('messages.server_unreachable'));
-          } else {
+          // Explicitly check for 400 (Invalid Credentials)
+          if (err.status === 400) {
               setLoginError(t('messages.invalid_creds'));
+          } else {
+              // Treat 0 (Offline), undefined (Network Error), or 5xx (Server Error) as connection issues
+              setLoginError(t('messages.server_unreachable'));
           }
       }
   };
@@ -843,6 +856,17 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
           }
       }
   };
+  
+  const handleOfflineLogin = () => {
+      const lastId = storage.getLastActiveUser();
+      if (lastId) {
+          const u = users.find(u => u.id === lastId);
+          if (u) {
+              setCurrentUserId(u.id);
+              setIsReadOnly(true);
+          }
+      }
+  }
 
   if (!isLoaded) {
       return (
@@ -854,6 +878,9 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
 
   // --- Login Screen ---
   if (!currentUser) {
+    const lastActiveId = storage.getLastActiveUser();
+    const cachedUser = lastActiveId ? users.find(u => u.id === lastActiveId) : null;
+
     return (
       <div className={`h-dvh w-full flex flex-col items-center justify-center p-6 relative overflow-hidden transition-colors duration-300 
         ${!isServerLive ? 'border-t-4 border-l-4 border-r-4 border-red-500 bg-red-50/30 dark:bg-red-900/10' : 'bg-gray-100 dark:bg-gray-900'} 
@@ -937,6 +964,22 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
                 <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-900/20 active:scale-95 transition-all mt-2 flex items-center justify-center gap-2">
                     {isSetupMode ? <><Plus size={18}/> {t('auth.create_admin')}</> : t('auth.sign_in')}
                 </button>
+
+                {/* Cached User / Read Only Login */}
+                {!isServerLive && cachedUser && !isSetupMode && (
+                    <div className="pt-4 mt-4 border-t border-gray-200 dark:border-gray-700 w-full flex flex-col items-center gap-2">
+                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                            {t('auth.offline_user', { name: cachedUser.username })}
+                        </div>
+                        <button 
+                            type="button" 
+                            onClick={handleOfflineLogin}
+                            className="w-full bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 font-bold py-3 rounded-xl hover:bg-gray-300 dark:hover:bg-gray-600 active:scale-95 transition-all flex items-center justify-center gap-2"
+                        >
+                            <Shield size={18} /> {t('auth.view_offline')}
+                        </button>
+                    </div>
+                )}
             </form>
         </div>
       </div>
@@ -953,9 +996,12 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
             ${!isServerLive ? 'border-t-4 border-l-4 border-r-4 border-red-500 bg-red-50/30 dark:bg-red-900/10' : 'bg-gray-100 dark:bg-gray-900'}`}>
           
           {/* Offline Header Banner (Unobtrusive) */}
-          {!isServerLive && (
-               <div className="w-full bg-red-500 text-white text-[10px] uppercase tracking-widest font-bold text-center py-0.5 shrink-0">
-                   {t('app.offline_mode')}
+          {(!isServerLive || isReadOnly) && (
+               <div className={`w-full text-white text-[10px] uppercase tracking-widest font-bold text-center py-0.5 shrink-0 flex justify-between px-4 items-center ${isReadOnly ? 'bg-orange-500' : 'bg-red-500'}`}>
+                   <span>{isReadOnly ? t('app.read_only_mode') : t('app.offline_mode')}</span>
+                   {isReadOnly && isServerLive && (
+                       <button onClick={() => setCurrentUserId(null)} className="underline hover:no-underline">{t('app.login_to_sync')}</button>
+                   )}
                </div>
            )}
 
@@ -1038,6 +1084,7 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
                     onUpdateTodos={updateTodos}
                     currentTab={listTab}
                     onTabChange={setListTab}
+                    isReadOnly={isReadOnly}
                 />
                 )}
                 {view === AppView.SETTINGS && (
@@ -1054,6 +1101,7 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
                     onUpdateStores={updateStores}
                     categories={categories}
                     onUpdateCategories={updateCategories}
+                    isReadOnly={isReadOnly}
                 />
                 )}
             </div>
@@ -1075,14 +1123,15 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
                                 onUpdateTodos={updateTodos}
                                 currentTab={listTab}
                                 onTabChange={setListTab}
+                                isReadOnly={isReadOnly}
                             />
                         ) : (
                             <Calendar 
                                 events={events} 
                                 viewMode="AGENDA"
                                 onViewModeChange={() => {}}
-                                onEventClick={openEditEventModal}
-                                onDateClick={openNewEventModal}
+                                onEventClick={isReadOnly ? () => {} : openEditEventModal}
+                                onDateClick={isReadOnly ? () => {} : openNewEventModal}
                                 onUpdateEvents={updateEvents}
                                 settings={settings}
                                 weatherData={weatherData}
@@ -1152,11 +1201,13 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
               onClick={() => { 
                   // 1. Reset App State (Triggers cleanup effect while Auth is still valid)
 				  setCurrentUserId(null); 
+                  setIsReadOnly(false);
 				  setIsSetupMode(false);
 
                   // 2. Clear Local Storage prefs
 				  localStorage.removeItem('fs_active_view'); 
 				  localStorage.removeItem('fs_active_list_tab'); 
+                  // NOTE: We DO NOT clear fs_cache_* or fs_last_active_user to allow offline re-entry.
 
                   // 3. Clear PocketBase Auth (Delayed slightly to allow unsubscribe to fire)
                   setTimeout(() => {

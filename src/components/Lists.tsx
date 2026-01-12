@@ -16,6 +16,7 @@ interface ListsProps {
   onUpdateTodos: (items: TodoItem[], skipHistory?: boolean) => void;
   currentTab: 'shopping' | 'todos';
   onTabChange: (tab: 'shopping' | 'todos') => void;
+  isReadOnly?: boolean;
 }
 
 const getAutocompleteHistory = (): string[] => {
@@ -240,6 +241,7 @@ const Lists: React.FC<ListsProps> = ({
   }
 
   const deleteShopItem = (id: string) => {
+      if(isReadOnly) return;
       onUpdateShopping(shoppingList.filter(i => i.id !== id));
       setSelectedItem(null);
   };
@@ -512,16 +514,18 @@ const Lists: React.FC<ListsProps> = ({
   }, [todos, currentUser.id]);
 
   const toggleTodo = (id: string) => {
+      if(isReadOnly) return;
       onUpdateTodos(todos.map(i => i.id === id ? { ...i, isCompleted: !i.isCompleted } : i), true);
   };
   
   const deleteTodo = (id: string) => {
+      if(isReadOnly) return;
       onUpdateTodos(todos.filter(i => i.id !== id));
       setSelectedTodo(null);
   };
   
   const addTodo = () => {
-      if(!newItemText.trim()) return;
+      if(isReadOnly || !newItemText.trim()) return;
       const { content, priority, isPrivate } = parseInput(newItemText);
       onUpdateTodos([...todos, { 
           id: Date.now().toString(), 
@@ -811,7 +815,8 @@ const Lists: React.FC<ListsProps> = ({
           </div>
       )}
 
-      {/* Input */}
+      {/* Input - Hidden in Read Only Mode */}
+      {!isReadOnly && (
       <div className="p-3 bg-white dark:bg-gray-800 shadow-sm shrink-0 z-20">
         <div className="flex gap-2 relative" ref={inputWrapperRef}>
           <input 
@@ -839,6 +844,7 @@ const Lists: React.FC<ListsProps> = ({
           )}
         </div>
       </div>
+      )}
 
       {/* List Content */}
       <div className="flex-1 overflow-y-auto p-2 sm:p-4 space-y-6 pb-20 custom-scrollbar relative">
@@ -921,15 +927,15 @@ const Lists: React.FC<ListsProps> = ({
                     return (
                         <div 
                             key={item.id} 
-                            onClick={() => !saving && setSelectedTodo(item)}
+                            onClick={() => !saving && !isReadOnly && setSelectedTodo(item)}
                             className={`flex items-center gap-3 p-3 bg-white dark:bg-gray-800 rounded-lg shadow-sm border-l-4 transition-colors 
-                                ${saving ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700'} 
+                                ${saving || isReadOnly ? 'opacity-90' : 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700'} 
                                 ${item.isCompleted ? 'opacity-50' : ''}`} 
                             style={{ borderLeftColor: getUserColor(users.find(u => u.id === item.userId)) }}
                         >
                             <button 
                                 onClick={(e) => { e.stopPropagation(); toggleTodo(item.id); }} 
-                                disabled={saving}
+                                disabled={saving || isReadOnly}
                                 className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors 
                                     ${item.isCompleted ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 dark:border-gray-600 text-transparent hover:border-green-500'}
                                     ${saving ? 'cursor-not-allowed opacity-50' : ''}`}

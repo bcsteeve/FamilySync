@@ -10,7 +10,10 @@
     "undo": "Undo",
     "redo": "Redo",
 	"loading": "Loading...",
-	"offline_mode": "Offline Mode - Changes queued"
+	"offline_mode": "Offline Mode - Changes queued",
+	"read_only_mode": "Read-Only Mode",
+    "connection_restored": "Connection restored. Please log in.",
+    "login_to_sync": "Login to Sync"
   },
   "auth": {
     "sign_in": "Sign In",
@@ -18,7 +21,9 @@
     "create_admin": "Create Admin Account",
     "username": "Username",
     "name_or_email": "Name or Email",
-    "password": "Password"
+    "password": "Password",
+	"view_offline": "View Offline Data",
+    "offline_user": "Previous User: {{name}}"
   },
   "calendar": {
     "week": "Weekly",
@@ -174,7 +179,9 @@
     "unknown_store": "Unknown Store",
 	"import_success": "Successfully imported {{count}} events!",
     "import_error": "Failed to parse iCal file.",
-    "no_events_in_file": "No events found in file."
+    "no_events_in_file": "No events found in file.",
+	"security_lock": "Settings Locked",
+    "read_only_desc": "You are currently in offline read-only mode. Please log in to modify settings or manage data."
   },
   "auth": {
     "sign_in": "Sign In",
