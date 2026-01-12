@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { User, CalendarEvent, ShoppingItem, TodoItem, SystemSettings, ShoppingStore, ShoppingCategory } from '../types';
 import { PALETTES, PaletteKey } from '../constants';
-import { Shield, UserPlus, Trash2, AlertTriangle, Edit2, Check, X, Palette, Download, Upload, Database, CloudSun, Search, MapPin, Store, GripVertical, Image as ImageIcon, Smile, Calendar, Lock, Key, CheckCircle, Type, Plus, HelpCircle, FileDown, FileUp } from 'lucide-react';
+import { Shield, UserPlus, Trash2, AlertTriangle, Edit2, Check, X, Palette, Download, Upload, Database, CloudSun, Search, MapPin, Store, GripVertical, Image as ImageIcon, Smile, Calendar, Lock, Key, CheckCircle, Type, Plus, HelpCircle, FileDown, FileUp, WifiOff } from 'lucide-react';
 import { fetchAvailableCountries, getUniqueSubdivisions, CountryInfo, searchCity } from '../services/integrations';
 import { storage } from '../services/storage';
 import { generateICS, parseICS } from '../services/ical';
@@ -27,6 +27,7 @@ interface SettingsProps {
   categories: ShoppingCategory[];
   onUpdateCategories: (categories: ShoppingCategory[]) => void;
   isReadOnly?: boolean;
+  isServerLive?: boolean;
 }
 
 const EMOJI_LIST = ['👨', '👩', '👦', '👧', '👶', '👴', '👵', '🙂', '😎', '🤓', '🤠', '👽', '🤖', '👻', '🐶', '🐱', '🦊', '🐻', '🐼', '🐨'];
@@ -34,21 +35,24 @@ const EMOJI_LIST = ['👨', '👩', '👦', '👧', '👶', '👴', '👵', '�
 const Settings: React.FC<SettingsProps> = ({ 
   events, onUpdateEvents, shopping, onUpdateShopping, todos, onUpdateTodos,
   settings, onUpdateSettings, stores, onUpdateStores, categories, onUpdateCategories,
-  isReadOnly
+  isReadOnly, isServerLive = true
 }) => {
   // CONTEXT HOOKS
   const { t, i18n } = useTranslation();
   
-  if (isReadOnly) {
+  // Lock settings if Read Only (Logged Out) OR Server is Offline
+  if (isReadOnly || !isServerLive) {
+      const isOfflineLock = !isReadOnly && !isServerLive;
+      
       return (
           <div className="h-full flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-900 p-6 text-center">
-              <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm w-full">
-                  <div className="w-16 h-16 bg-orange-100 dark:bg-orange-900/30 rounded-full flex items-center justify-center mx-auto mb-4 text-orange-500 dark:text-orange-400">
-                      <Lock size={32} />
+              <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm w-full animate-in zoom-in-95 duration-200">
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${isOfflineLock ? 'bg-red-100 dark:bg-red-900/30 text-red-500 dark:text-red-400' : 'bg-orange-100 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400'}`}>
+                      {isOfflineLock ? <WifiOff size={32} /> : <Lock size={32} />}
                   </div>
                   <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-2">{t('settings.security_lock')}</h2>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 leading-relaxed">
-                      {t('settings.read_only_desc')}
+                      {isOfflineLock ? t('settings.offline_lock_desc') : t('settings.read_only_desc')}
                   </p>
               </div>
           </div>

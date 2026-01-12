@@ -181,7 +181,8 @@
     "import_error": "Failed to parse iCal file.",
     "no_events_in_file": "No events found in file.",
 	"security_lock": "Settings Locked",
-    "read_only_desc": "You are currently in offline read-only mode. Please log in to modify settings or manage data."
+    "read_only_desc": "You are currently in offline read-only mode. Please log in to modify settings or manage data.",
+    "offline_lock_desc": "Connection to server lost. Settings cannot be modified while offline. Please restore connection to make changes."
   },
   "priority": {
     "urgent": "URGENT",
