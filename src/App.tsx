@@ -264,10 +264,14 @@ const App: React.FC = () => {
       };
 
       document.addEventListener('visibilitychange', handleVisibility);
+      window.addEventListener('online', checkHealth);
+      window.addEventListener('offline', () => setIsServerLive(false));
 
       return () => {
           clearInterval(timer);
           document.removeEventListener('visibilitychange', handleVisibility);
+          window.removeEventListener('online', checkHealth);
+          window.removeEventListener('offline', () => setIsServerLive(false));
       };
   }, [isServerLive]);
 
