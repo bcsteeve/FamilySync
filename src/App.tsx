@@ -1122,6 +1122,7 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
                     categories={categories}
                     onUpdateCategories={updateCategories}
                     isReadOnly={isReadOnly}
+                    isServerLive={isServerLive}
                 />
                 )}
             </div>
