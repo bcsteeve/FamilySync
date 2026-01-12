@@ -27,7 +27,7 @@ const getAutocompleteHistory = (): string[] => {
 };
 
 const Lists: React.FC<ListsProps> = ({ 
-    shoppingList, todos, stores, categories, onUpdateShopping, onUpdateTodos, currentTab, onTabChange 
+    shoppingList, todos, stores, categories, onUpdateShopping, onUpdateTodos, currentTab, onTabChange, isReadOnly 
 }) => {
   const { users, currentUser } = useUser();
   const { activePalette, getUserColor } = useTheme();
