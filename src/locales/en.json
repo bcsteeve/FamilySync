@@ -229,6 +229,7 @@
   "messages": {
     "pass_min_chars": "Password must be at least 8 characters.",
     "invalid_creds": "Invalid credentials",
+    "server_unreachable": "Unable to reach server. Check connection.",
     "create_fail": "Failed to create user: {{error}}",
     "name_taken": "Name taken",
     "failed_create": "Failed to create",

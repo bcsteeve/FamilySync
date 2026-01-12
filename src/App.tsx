@@ -808,9 +808,13 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
           setLoginPassword('');
           // Force reload to get fresh data
           window.location.reload();
-      } catch (err) {
+      } catch (err: any) {
           console.error(err);
-          setLoginError(t('messages.invalid_creds'));
+          if (err.status === 0) {
+              setLoginError(t('messages.server_unreachable'));
+          } else {
+              setLoginError(t('messages.invalid_creds'));
+          }
       }
   };
 
@@ -831,8 +835,12 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
           window.location.reload();
       } catch (err: any) {
           console.error(err);
-          const pbMessage = err?.data?.message || err?.message || "Unknown error";
-          setLoginError(t('messages.create_fail', { error: pbMessage }));
+          if (err.status === 0) {
+              setLoginError(t('messages.server_unreachable'));
+          } else {
+              const pbMessage = err?.data?.message || err?.message || "Unknown error";
+              setLoginError(t('messages.create_fail', { error: pbMessage }));
+          }
       }
   };
 
@@ -847,7 +855,17 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
   // --- Login Screen ---
   if (!currentUser) {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white p-6 relative overflow-hidden transition-colors duration-300">
+      <div className={`h-dvh w-full flex flex-col items-center justify-center p-6 relative overflow-hidden transition-colors duration-300 
+        ${!isServerLive ? 'border-t-4 border-l-4 border-r-4 border-red-500 bg-red-50/30 dark:bg-red-900/10' : 'bg-gray-100 dark:bg-gray-900'} 
+        text-gray-900 dark:text-white`}>
+        
+        {/* Offline Banner */}
+        {!isServerLive && (
+             <div className="absolute top-0 left-0 w-full bg-red-500 text-white text-[10px] uppercase tracking-widest font-bold text-center py-0.5 z-50">
+                 {t('app.offline_mode')}
+             </div>
+        )}
+
         <div className="absolute top-0 left-0 w-64 h-64 bg-blue-500 rounded-full blur-[100px] opacity-20 -translate-x-1/2 -translate-y-1/2"></div>
         <div className="absolute bottom-0 right-0 w-64 h-64 bg-purple-500 rounded-full blur-[100px] opacity-20 translate-x-1/2 translate-y-1/2"></div>
         
