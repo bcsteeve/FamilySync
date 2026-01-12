@@ -822,7 +822,16 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
       }
 
       try {
-          const user = await storage.loginUser(loginUsername, loginPassword);
+          // Wrap login in a strict timeout (5s) to handle "Lie-Fi" on mobile networks
+          const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Timeout')), 5000)
+          );
+
+          const user = await Promise.race([
+              storage.loginUser(loginUsername, loginPassword),
+              timeoutPromise
+          ]) as User;
+
           setCurrentUserId(user.id);
           setIsReadOnly(false);
           setLoginError('');
@@ -831,13 +840,13 @@ const updateCategories = async (newCats: ShoppingCategory[]) => {
           window.location.reload();
       } catch (err: any) {
           console.error(err);
-          // Explicitly check for 400 (Invalid Credentials)
+          // Explicitly check for 400 (Invalid Credentials) - ensure it's truly a server response
           if (err.status === 400) {
               setLoginError(t('messages.invalid_creds'));
           } else {
-              // Treat 0 (Offline), undefined (Network Error), or 5xx (Server Error) as connection issues
+              // Treat 0 (Offline), Timeout, undefined (Network Error), or 5xx as connection issues
               setLoginError(t('messages.server_unreachable'));
-              setIsServerLive(false); // Force offline UI state
+              setIsServerLive(false); // Force offline UI state to reveal "View Offline" button
           }
       }
   };
