@@ -183,14 +183,6 @@
 	"security_lock": "Settings Locked",
     "read_only_desc": "You are currently in offline read-only mode. Please log in to modify settings or manage data."
   },
-  "auth": {
-    "sign_in": "Sign In",
-    "setup": "Setup",
-    "create_admin": "Create Admin Account",
-    "username": "Username",
-    "name_or_email": "Name or Email",
-    "password": "Password"
-  },
   "priority": {
     "urgent": "URGENT",
     "normal": "NORMAL",
