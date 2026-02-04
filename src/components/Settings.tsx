@@ -712,7 +712,7 @@ const addUser = async () => {
         </div>
       )}
 
-      <div className="p-4 flex-1 overflow-y-auto space-y-6 pb-24 custom-scrollbar">
+      <div className="p-4 flex-1 overflow-y-auto space-y-6 pb-24 custom-scrollbar max-w-3xl mx-auto w-full">
 
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
             <div className="p-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/50 flex justify-between items-center">
@@ -784,10 +784,13 @@ const addUser = async () => {
                                 u.id === currentUser.id ? { ...u, preferences: { ...u.preferences!, timeFormat: next } } : u
                             ), true);
                         }}
-                        className={`col-span-2 flex items-center justify-between p-2 rounded border text-xs font-bold ${currentUser.preferences?.timeFormat === '24h' ? 'border-orange-200 bg-orange-50 text-orange-700 dark:bg-orange-900/20 dark:border-orange-800 dark:text-orange-400' : 'border-gray-200 bg-white text-gray-500 dark:bg-gray-700 dark:border-gray-600'}`}
+                        className={`flex items-center justify-between p-2 rounded border text-xs font-bold ${currentUser.preferences?.timeFormat === '24h' ? 'border-orange-200 bg-orange-50 text-orange-700 dark:bg-orange-900/20 dark:border-orange-800 dark:text-orange-400' : 'border-gray-200 bg-white text-gray-500 dark:bg-gray-700 dark:border-gray-600'}`}
                     >
-                        <span>{t('settings.time_format')}: {currentUser.preferences?.timeFormat === '24h' ? '24h' : '12h (AM/PM)'}</span>
-                        <Clock size={14}/>
+                        <span>{t('settings.time_format')}</span>
+                        <div className="flex items-center gap-2">
+                            <span>{currentUser.preferences?.timeFormat === '24h' ? '24h' : '12h'}</span>
+                            <Clock size={14}/>
+                        </div>
                     </button>
                 </div>
 
