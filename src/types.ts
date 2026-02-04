@@ -5,6 +5,7 @@ export interface UserPreferences {
   showMoonPhases: boolean;
   showHolidays: boolean;
   theme: 'LIGHT' | 'DARK';
+  timeFormat?: '12h' | '24h';
   language?: string;
 }
 

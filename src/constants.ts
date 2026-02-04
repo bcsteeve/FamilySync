@@ -63,7 +63,8 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   showWeather: true,
   showMoonPhases: true,
   showHolidays: true,
-  theme: 'LIGHT'
+  theme: 'LIGHT',
+  timeFormat: '12h'
 };
 
 export const MOCK_USERS: User[] = [

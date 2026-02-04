@@ -437,8 +437,12 @@ const Calendar: React.FC<CalendarProps> = ({
 
   const formatTime = (isoString: string) => {
       const date = new Date(isoString);
-      // Respect system preference completely (e.g. 17:00 vs 5:00 PM)
-      return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      const use24h = currentUser.preferences?.timeFormat === '24h';
+      return date.toLocaleTimeString(undefined, { 
+          hour: 'numeric', 
+          minute: '2-digit',
+          hour12: !use24h
+      });
   };
 
   const rafRef = useRef<number | null>(null);

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { User, CalendarEvent, ShoppingItem, TodoItem, SystemSettings, ShoppingStore, ShoppingCategory } from '../types';
 import { PALETTES, PaletteKey } from '../constants';
-import { Shield, UserPlus, Trash2, AlertTriangle, Edit2, Check, X, Palette, Download, Upload, Database, CloudSun, Search, MapPin, Store, GripVertical, Image as ImageIcon, Smile, Calendar, Lock, Key, CheckCircle, Type, Plus, HelpCircle, FileDown, FileUp, WifiOff } from 'lucide-react';
+import { Shield, UserPlus, Trash2, AlertTriangle, Edit2, Check, X, Palette, Download, Upload, Database, CloudSun, Search, MapPin, Store, GripVertical, Image as ImageIcon, Smile, Calendar, Lock, Key, CheckCircle, Type, Plus, HelpCircle, FileDown, FileUp, WifiOff, Clock } from 'lucide-react';
 import { fetchAvailableCountries, getUniqueSubdivisions, CountryInfo, searchCity } from '../services/integrations';
 import { storage } from '../services/storage';
 import { generateICS, parseICS } from '../services/ical';
@@ -775,6 +775,19 @@ const addUser = async () => {
                     >
                         <span>{t('settings.dark_mode')}</span>
                         {currentUser.preferences?.theme === 'DARK' ? <Check size={14}/> : <X size={14}/>}
+                    </button>
+                    <button 
+                        onClick={() => {
+                            const current = currentUser.preferences?.timeFormat || '12h';
+                            const next = current === '12h' ? '24h' : '12h';
+                            onUpdateUsers(users.map(u => 
+                                u.id === currentUser.id ? { ...u, preferences: { ...u.preferences!, timeFormat: next } } : u
+                            ), true);
+                        }}
+                        className={`col-span-2 flex items-center justify-between p-2 rounded border text-xs font-bold ${currentUser.preferences?.timeFormat === '24h' ? 'border-orange-200 bg-orange-50 text-orange-700 dark:bg-orange-900/20 dark:border-orange-800 dark:text-orange-400' : 'border-gray-200 bg-white text-gray-500 dark:bg-gray-700 dark:border-gray-600'}`}
+                    >
+                        <span>{t('settings.time_format')}: {currentUser.preferences?.timeFormat === '24h' ? '24h' : '12h (AM/PM)'}</span>
+                        <Clock size={14}/>
                     </button>
                 </div>
 
